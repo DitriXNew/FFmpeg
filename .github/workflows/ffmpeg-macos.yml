@@ -16,30 +16,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build deps
+      - name: Install build deps (arm64)
         run: |
-          brew update
-          brew install cmake ninja pkg-config nasm yasm \
-                       libvpx aom opus libvorbis libogg libwebp
-          # внешний набор либ можно урезать; всё ниже совместимо с LGPL
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew tap homebrew/core
+          brew install cmake ninja pkg-config nasm yasm libvpx aom opus libvorbis libogg
 
-      - name: Build & install whisper.cpp (arm64)
+      - name: Build & install whisper.cpp (arm64, static lib + pkg-config)
         run: |
+          set -eux
           git clone --depth=1 https://github.com/ggml-org/whisper.cpp
           cmake -S whisper.cpp -B build-whisper -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX="$WHISPER_PREFIX" \
-                -DBUILD_SHARED_LIBS=ON
+                -DBUILD_SHARED_LIBS=OFF
           cmake --build build-whisper --config Release --parallel
           cmake --install build-whisper
-          ls -l "$WHISPER_PREFIX"/lib/pkgconfig/whisper.pc
+          # ensure headers are present
+          mkdir -p "$WHISPER_PREFIX/include"
+          cp -f whisper.cpp/whisper.h "$WHISPER_PREFIX/include/" || true
+          # minimal whisper.pc for pkg-config
+          mkdir -p "$WHISPER_PREFIX/lib/pkgconfig"
+          cat > "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc" <<'PC'
+          prefix=@PREFIX@
+          exec_prefix=${prefix}
+          libdir=${prefix}/lib
+          includedir=${prefix}/include
+          Name: whisper
+          Description: whisper.cpp C API
+          Version: 1.7.5
+          Libs: -L${libdir} -lwhisper
+          Libs.private: -framework Accelerate -lpthread
+          Cflags: -I${includedir}
+          PC
+          sed -i '' "s|@PREFIX@|$WHISPER_PREFIX|g" "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+          ls -l "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
 
       - name: Build FFmpeg (arm64, LGPL, +whisper)
         run: |
+          set -eux
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src && git checkout "$FFMPEG_TAG"
-
           export PKG_CONFIG_PATH="$WHISPER_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
-
           ./configure \
             --prefix="$INSTALL_PREFIX-arm64" \
             --arch=arm64 --target-os=darwin \
@@ -48,49 +65,65 @@ jobs:
             --disable-gpl --disable-nonfree \
             --enable-static --disable-shared \
             --enable-libvpx --enable-libaom \
-            --enable-libopus --enable-libvorbis --enable-libwebp
-
-          make -j$(sysctl -n hw.ncpu)
+            --enable-libopus --enable-libvorbis
+          make -j"$(sysctl -n hw.ncpu)"
           make install
+          "$INSTALL_PREFIX-arm64/bin/ffmpeg" -version
+          "$INSTALL_PREFIX-arm64/bin/ffmpeg" -filters | grep whisper
+          ! "$INSTALL_PREFIX-arm64/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"
 
-          "$INSTALL_PREFIX-arm64"/bin/ffmpeg -version
-          "$INSTALL_PREFIX-arm64"/bin/ffmpeg -filters | grep whisper || exit 1
-          "$INSTALL_PREFIX-arm64"/bin/ffmpeg -buildconf | grep -- "--enable-gpl" && exit 1 || true
-
-      - name: Upload arm64 artifact
+      - name: Upload arm64 artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ffmpeg-arm64
-          path: ${{ env.INSTALL_PREFIX }}-arm64/bin/ffmpeg
+          path: |
+            ${{ env.INSTALL_PREFIX }}-arm64/bin/ffmpeg
+            ${{ env.INSTALL_PREFIX }}-arm64/bin/ffprobe
 
   build-x86_64:
     runs-on: macos-13
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build deps
+      - name: Install build deps (x86_64)
         run: |
-          brew update
-          brew install cmake ninja pkg-config nasm yasm \
-                       libvpx aom opus libvorbis libogg libwebp
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew tap homebrew/core
+          brew install cmake ninja pkg-config nasm yasm libvpx aom opus libvorbis libogg
 
-      - name: Build & install whisper.cpp (x86_64)
+      - name: Build & install whisper.cpp (x86_64, static lib + pkg-config)
         run: |
+          set -eux
           git clone --depth=1 https://github.com/ggml-org/whisper.cpp
           cmake -S whisper.cpp -B build-whisper -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX="$WHISPER_PREFIX-x86" \
-                -DBUILD_SHARED_LIBS=ON
+                -DBUILD_SHARED_LIBS=OFF
           cmake --build build-whisper --config Release --parallel
           cmake --install build-whisper
-          ls -l "$WHISPER_PREFIX-x86"/lib/pkgconfig/whisper.pc
+          mkdir -p "$WHISPER_PREFIX-x86/include"
+          cp -f whisper.cpp/whisper.h "$WHISPER_PREFIX-x86/include/" || true
+          mkdir -p "$WHISPER_PREFIX-x86/lib/pkgconfig"
+          cat > "$WHISPER_PREFIX-x86/lib/pkgconfig/whisper.pc" <<'PC'
+          prefix=@PREFIX@
+          exec_prefix=${prefix}
+          libdir=${prefix}/lib
+          includedir=${prefix}/include
+          Name: whisper
+          Description: whisper.cpp C API
+          Version: 1.7.5
+          Libs: -L${libdir} -lwhisper
+          Libs.private: -framework Accelerate -lpthread
+          Cflags: -I${includedir}
+          PC
+          sed -i '' "s|@PREFIX@|$WHISPER_PREFIX-x86|g" "$WHISPER_PREFIX-x86/lib/pkgconfig/whisper.pc"
+          ls -l "$WHISPER_PREFIX-x86/lib/pkgconfig/whisper.pc"
 
       - name: Build FFmpeg (x86_64, LGPL, +whisper)
         run: |
+          set -eux
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src && git checkout "$FFMPEG_TAG"
-
           export PKG_CONFIG_PATH="$WHISPER_PREFIX-x86/lib/pkgconfig:$PKG_CONFIG_PATH"
-
           ./configure \
             --prefix="$INSTALL_PREFIX-x86_64" \
             --arch=x86_64 --target-os=darwin \
@@ -99,20 +132,20 @@ jobs:
             --disable-gpl --disable-nonfree \
             --enable-static --disable-shared \
             --enable-libvpx --enable-libaom \
-            --enable-libopus --enable-libvorbis --enable-libwebp
-
-          make -j$(sysctl -n hw.ncpu)
+            --enable-libopus --enable-libvorbis
+          make -j"$(sysctl -n hw.ncpu)"
           make install
+          "$INSTALL_PREFIX-x86_64/bin/ffmpeg" -version
+          "$INSTALL_PREFIX-x86_64/bin/ffmpeg" -filters | grep whisper
+          ! "$INSTALL_PREFIX-x86_64/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"
 
-          "$INSTALL_PREFIX-x86_64"/bin/ffmpeg -version
-          "$INSTALL_PREFIX-x86_64"/bin/ffmpeg -filters | grep whisper || exit 1
-          "$INSTALL_PREFIX-x86_64"/bin/ffmpeg -buildconf | grep -- "--enable-gpl" && exit 1 || true
-
-      - name: Upload x86_64 artifact
+      - name: Upload x86_64 artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ffmpeg-x86_64
-          path: ${{ env.INSTALL_PREFIX }}-x86_64/bin/ffmpeg
+          path: |
+            ${{ env.INSTALL_PREFIX }}-x86_64/bin/ffmpeg
+            ${{ env.INSTALL_PREFIX }}-x86_64/bin/ffprobe
 
   lipo-universal:
     needs: [build-arm64, build-x86_64]
@@ -127,20 +160,18 @@ jobs:
           name: ffmpeg-x86_64
           path: x86_64
 
-      - name: Create universal2
+      - name: Create universal2 binaries (ffmpeg + ffprobe)
         run: |
+          set -eux
           lipo -create -output ffmpeg-universal arm64/ffmpeg x86_64/ffmpeg
+          lipo -create -output ffprobe-universal arm64/ffprobe x86_64/ffprobe
           file ffmpeg-universal
-          ./ffmpeg-universal -version
-          ./ffmpeg-universal -filters | grep whisper || exit 1
-
-      # (опционально) подпись вашим Dev ID, если хотите сразу готовить к вложению в .app
-      # - name: Codesign (optional)
-      #   run: codesign --force --sign "$APPLE_DEV_ID" --options runtime --timestamp ffmpeg-universal
+          ./ffmpeg-universal -filters | grep whisper
 
       - name: Package tar.gz
         run: |
-          tar -czf ffmpeg-macos-universal2-lgpl-whisper.tar.gz ffmpeg-universal
+          tar -czf ffmpeg-macos-universal2-lgpl-whisper.tar.gz \
+            ffmpeg-universal ffprobe-universal
 
       - name: Upload final artifact
         uses: actions/upload-artifact@v4
