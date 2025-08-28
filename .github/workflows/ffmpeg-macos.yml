@@ -107,8 +107,6 @@ PC
             --enable-libopus --enable-libvorbis \
             --disable-debug \
             --disable-doc \
-            --disable-programs \
-            --enable-ffmpeg --enable-ffprobe \
             --enable-pic
           make -j"$(sysctl -n hw.ncpu)"
           make install
