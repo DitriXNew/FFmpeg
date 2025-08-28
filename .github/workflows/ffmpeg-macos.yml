@@ -27,40 +27,75 @@ jobs:
       - name: Build & install whisper.cpp (arm64, static lib + pkg-config)
         run: |
           set -eux
+          
+          # Clone whisper.cpp
           git clone --depth=1 https://github.com/ggml-org/whisper.cpp
-          cmake -S whisper.cpp -B build-whisper -DCMAKE_BUILD_TYPE=Release \
+          cd whisper.cpp
+          
+          # Get actual version from CMakeLists.txt
+          WHISPER_VERSION=$(grep -E "set\(WHISPER_VERSION" CMakeLists.txt | cut -d'"' -f2 || echo "1.8.0")
+          echo "Detected whisper version: $WHISPER_VERSION"
+          cd ..
+          
+          # Build whisper.cpp
+          cmake -S whisper.cpp -B build-whisper \
+                -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX="$WHISPER_PREFIX" \
-                -DBUILD_SHARED_LIBS=OFF
+                -DBUILD_SHARED_LIBS=OFF \
+                -DWHISPER_BUILD_TESTS=OFF \
+                -DWHISPER_BUILD_EXAMPLES=OFF
           cmake --build build-whisper --config Release --parallel
           cmake --install build-whisper
-          # ensure headers are present
+          
+          # Verify installation
+          echo "=== Whisper installation verification ==="
+          ls -la "$WHISPER_PREFIX/lib/" || true
+          ls -la "$WHISPER_PREFIX/include/" || true
+          
+          # Ensure headers are present
           mkdir -p "$WHISPER_PREFIX/include"
           cp -f whisper.cpp/whisper.h "$WHISPER_PREFIX/include/" || true
-          # minimal whisper.pc for pkg-config
+          cp -f whisper.cpp/ggml.h "$WHISPER_PREFIX/include/" || true
+          
+          # Create pkg-config file
           mkdir -p "$WHISPER_PREFIX/lib/pkgconfig"
-          cat > "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc" <<'PC'
-          prefix=@PREFIX@
-          exec_prefix=${prefix}
-          libdir=${prefix}/lib
-          includedir=${prefix}/include
-          Name: whisper
-          Description: whisper.cpp C API
-          Version: 1.7.5
-          Libs: -L${libdir} -lwhisper
-          Libs.private: -framework Accelerate -lpthread
-          Cflags: -I${includedir}
-          PC
-          sed -i '' "s|@PREFIX@|$WHISPER_PREFIX|g" "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-          ls -l "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+          cat > "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc" <<PC
+prefix=$WHISPER_PREFIX
+exec_prefix=\${prefix}
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: whisper
+Description: whisper.cpp C API
+Version: $WHISPER_VERSION
+Libs: -L\${libdir} -lwhisper
+Libs.private: -framework Accelerate -lpthread
+Cflags: -I\${includedir}
+PC
+          
+          # Verify pkg-config file
+          echo "=== PKG-CONFIG verification ==="
+          cat "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+          export PKG_CONFIG_PATH="$WHISPER_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          pkg-config --exists whisper && echo "whisper pkg-config: OK" || echo "whisper pkg-config: FAILED"
+          pkg-config --modversion whisper || echo "Cannot get whisper version"
+          pkg-config --libs whisper || echo "Cannot get whisper libs"
 
       - name: Build FFmpeg (arm64, LGPL, +whisper)
         run: |
           set -eux
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src && git checkout "$FFMPEG_TAG"
-          # Initialize PKG_CONFIG_PATH to avoid unbound variable error
-          export PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-}"
-          export PKG_CONFIG_PATH="$WHISPER_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
+          
+          # Initialize and set PKG_CONFIG_PATH properly
+          export PKG_CONFIG_PATH="$WHISPER_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
+          
+          # Verify whisper is available
+          pkg-config --exists whisper || { echo "ERROR: whisper not found via pkg-config"; exit 1; }
+          pkg-config --modversion whisper
+          pkg-config --libs whisper
+          
           ./configure \
             --prefix="$INSTALL_PREFIX" \
             --arch=arm64 --target-os=darwin \
