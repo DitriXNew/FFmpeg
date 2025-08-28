@@ -27,27 +27,35 @@ jobs:
         run: |
           set -eux
           
-          # Clone and build whisper.cpp
+          # Clone whisper.cpp
           git clone --depth=1 https://github.com/ggml-org/whisper.cpp
           cd whisper.cpp
           
-          # Build whisper.cpp with cmake
+          # Configure build
           cmake -B build \
                 -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX=/usr/local \
                 -DBUILD_SHARED_LIBS=OFF \
                 -DWHISPER_BUILD_TESTS=OFF \
                 -DWHISPER_BUILD_EXAMPLES=OFF
           
+          # Build
           cmake --build build --config Release --parallel
           
-          # Install to system (required for FFmpeg to find it)
-          sudo make install -C build
+          # Install to system (creates whisper.pc automatically)
+          sudo cmake --install build
           
           # Verify installation
-          echo "=== Whisper installation check ==="
-          pkg-config --exists whisper && echo "✅ whisper found via pkg-config" || echo "❌ whisper not found"
-          pkg-config --modversion whisper || echo "Cannot get version"
-          pkg-config --libs whisper || echo "Cannot get libs"
+          echo "=== Installation verification ==="
+          ls -la /usr/local/lib/pkgconfig/whisper.pc || echo "No whisper.pc found"
+          ls -la /usr/local/include/whisper.h || echo "No whisper.h found"
+          ls -la /usr/local/lib/libwhisper.* || echo "No whisper libs found"
+          
+          echo "=== PKG-CONFIG test ==="
+          pkg-config --exists whisper && echo "✅ pkg-config found whisper" || echo "❌ pkg-config failed"
+          pkg-config --modversion whisper 2>/dev/null || echo "Cannot get version"
+          pkg-config --cflags whisper 2>/dev/null || echo "Cannot get cflags"
+          pkg-config --libs whisper 2>/dev/null || echo "Cannot get libs"
 
       - name: Build FFmpeg with whisper support
         run: |
