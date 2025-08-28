@@ -1,4 +1,6 @@
-name: build-ffmpeg-macos-lgpl-whisper
+# FFmpeg macOS ARM64 build for Flutter integration
+# Builds shared libraries (.dylib) for use with dart:ffi
+name: build-ffmpeg-macos-arm64-lgpl-whisper
 
 on:
   workflow_dispatch:
@@ -56,125 +58,55 @@ jobs:
           set -eux
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src && git checkout "$FFMPEG_TAG"
+          # Initialize PKG_CONFIG_PATH to avoid unbound variable error
+          export PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-}"
           export PKG_CONFIG_PATH="$WHISPER_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
           ./configure \
-            --prefix="$INSTALL_PREFIX-arm64" \
+            --prefix="$INSTALL_PREFIX" \
             --arch=arm64 --target-os=darwin \
             --enable-whisper \
             --enable-videotoolbox \
             --disable-gpl --disable-nonfree \
-            --enable-static --disable-shared \
+            --disable-static --enable-shared \
             --enable-libvpx --enable-libaom \
-            --enable-libopus --enable-libvorbis
+            --enable-libopus --enable-libvorbis \
+            --disable-debug \
+            --disable-doc \
+            --disable-programs \
+            --enable-ffmpeg --enable-ffprobe \
+            --enable-pic
           make -j"$(sysctl -n hw.ncpu)"
           make install
-          "$INSTALL_PREFIX-arm64/bin/ffmpeg" -version
-          "$INSTALL_PREFIX-arm64/bin/ffmpeg" -filters | grep whisper
-          ! "$INSTALL_PREFIX-arm64/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"
+          
+          # Verify LGPL compliance
+          echo "=== Verifying LGPL compliance ==="
+          "$INSTALL_PREFIX/bin/ffmpeg" -version
+          "$INSTALL_PREFIX/bin/ffmpeg" -filters | grep whisper
+          echo "=== Checking build configuration (should NOT contain GPL) ==="
+          "$INSTALL_PREFIX/bin/ffmpeg" -buildconf
+          if "$INSTALL_PREFIX/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"; then
+            echo "ERROR: GPL found in build configuration!"
+            exit 1
+          fi
+          echo "=== Checking dynamic libraries ==="
+          ls -la "$INSTALL_PREFIX/lib/"*.dylib
+          otool -L "$INSTALL_PREFIX/bin/ffmpeg"
+          echo "=== LGPL verification passed ==="
 
-      - name: Upload arm64 artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffmpeg-arm64
-          path: |
-            ${{ env.INSTALL_PREFIX }}-arm64/bin/ffmpeg
-            ${{ env.INSTALL_PREFIX }}-arm64/bin/ffprobe
-
-  build-x86_64:
-    runs-on: macos-13
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install build deps (x86_64)
+      - name: Package ARM64 binaries and libraries
         run: |
-          export HOMEBREW_NO_AUTO_UPDATE=1
-          brew tap homebrew/core
-          brew install cmake ninja pkg-config nasm yasm libvpx aom opus libvorbis libogg
-
-      - name: Build & install whisper.cpp (x86_64, static lib + pkg-config)
-        run: |
-          set -eux
-          git clone --depth=1 https://github.com/ggml-org/whisper.cpp
-          cmake -S whisper.cpp -B build-whisper -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="$WHISPER_PREFIX-x86" \
-                -DBUILD_SHARED_LIBS=OFF
-          cmake --build build-whisper --config Release --parallel
-          cmake --install build-whisper
-          mkdir -p "$WHISPER_PREFIX-x86/include"
-          cp -f whisper.cpp/whisper.h "$WHISPER_PREFIX-x86/include/" || true
-          mkdir -p "$WHISPER_PREFIX-x86/lib/pkgconfig"
-          cat > "$WHISPER_PREFIX-x86/lib/pkgconfig/whisper.pc" <<'PC'
-          prefix=@PREFIX@
-          exec_prefix=${prefix}
-          libdir=${prefix}/lib
-          includedir=${prefix}/include
-          Name: whisper
-          Description: whisper.cpp C API
-          Version: 1.7.5
-          Libs: -L${libdir} -lwhisper
-          Libs.private: -framework Accelerate -lpthread
-          Cflags: -I${includedir}
-          PC
-          sed -i '' "s|@PREFIX@|$WHISPER_PREFIX-x86|g" "$WHISPER_PREFIX-x86/lib/pkgconfig/whisper.pc"
-          ls -l "$WHISPER_PREFIX-x86/lib/pkgconfig/whisper.pc"
-
-      - name: Build FFmpeg (x86_64, LGPL, +whisper)
-        run: |
-          set -eux
-          git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
-          cd ffmpeg-src && git checkout "$FFMPEG_TAG"
-          export PKG_CONFIG_PATH="$WHISPER_PREFIX-x86/lib/pkgconfig:$PKG_CONFIG_PATH"
-          ./configure \
-            --prefix="$INSTALL_PREFIX-x86_64" \
-            --arch=x86_64 --target-os=darwin \
-            --enable-whisper \
-            --enable-videotoolbox \
-            --disable-gpl --disable-nonfree \
-            --enable-static --disable-shared \
-            --enable-libvpx --enable-libaom \
-            --enable-libopus --enable-libvorbis
-          make -j"$(sysctl -n hw.ncpu)"
-          make install
-          "$INSTALL_PREFIX-x86_64/bin/ffmpeg" -version
-          "$INSTALL_PREFIX-x86_64/bin/ffmpeg" -filters | grep whisper
-          ! "$INSTALL_PREFIX-x86_64/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"
-
-      - name: Upload x86_64 artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffmpeg-x86_64
-          path: |
-            ${{ env.INSTALL_PREFIX }}-x86_64/bin/ffmpeg
-            ${{ env.INSTALL_PREFIX }}-x86_64/bin/ffprobe
-
-  lipo-universal:
-    needs: [build-arm64, build-x86_64]
-    runs-on: macos-14
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: ffmpeg-arm64
-          path: arm64
-      - uses: actions/download-artifact@v4
-        with:
-          name: ffmpeg-x86_64
-          path: x86_64
-
-      - name: Create universal2 binaries (ffmpeg + ffprobe)
-        run: |
-          set -eux
-          lipo -create -output ffmpeg-universal arm64/ffmpeg x86_64/ffmpeg
-          lipo -create -output ffprobe-universal arm64/ffprobe x86_64/ffprobe
-          file ffmpeg-universal
-          ./ffmpeg-universal -filters | grep whisper
-
-      - name: Package tar.gz
-        run: |
-          tar -czf ffmpeg-macos-universal2-lgpl-whisper.tar.gz \
-            ffmpeg-universal ffprobe-universal
+          cd "$INSTALL_PREFIX"
+          # Package both binaries and shared libraries for Flutter
+          tar -czf ffmpeg-macos-arm64-lgpl-whisper.tar.gz \
+            bin/ffmpeg bin/ffprobe \
+            lib/*.dylib \
+            include/
+          ls -lh ffmpeg-macos-arm64-lgpl-whisper.tar.gz
+          echo "=== Contents ==="
+          tar -tzf ffmpeg-macos-arm64-lgpl-whisper.tar.gz
 
       - name: Upload final artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ffmpeg-macos-universal2-lgpl-whisper
-          path: ffmpeg-macos-universal2-lgpl-whisper.tar.gz
+          name: ffmpeg-macos-arm64-lgpl-whisper
+          path: ${{ env.INSTALL_PREFIX }}/ffmpeg-macos-arm64-lgpl-whisper.tar.gz
