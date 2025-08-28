@@ -17,11 +17,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install build dependencies (idempotent)
         run: |
+          set -euxo pipefail
           export HOMEBREW_NO_AUTO_UPDATE=1
-          brew install cmake ninja pkg-config nasm yasm \
-               libvpx aom opus libvorbis libogg
+          ensure () { if brew list --versions "$1" >/dev/null 2>&1; then echo "✓ $1 already installed"; else brew install "$1"; fi }
+          ensure cmake
+          ensure ninja
+          ensure pkg-config
+          ensure nasm
+          ensure yasm
+          ensure libvpx
+          ensure aom
+          ensure opus
+          ensure libvorbis
+          ensure libogg
 
       - name: Build and install whisper.cpp (local prefix, Metal ON, BLAS OFF)
         run: |
@@ -39,7 +49,7 @@ jobs:
           cmake --build build-whisper --config Release --parallel
           cmake --install build-whisper
 
-          # Создаём минимальный whisper.pc (иногда upstream его не кладёт)
+          # minimal whisper.pc (иногда upstream не кладёт)
           mkdir -p "$WHISPER_PREFIX/lib/pkgconfig" "$WHISPER_PREFIX/include"
           cp -f whisper.cpp/whisper.h "$WHISPER_PREFIX/include/" || true
           cat > "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc" <<'PC'
@@ -55,9 +65,9 @@ jobs:
           PC
           sed -i '' "s|@PREFIX@|$WHISPER_PREFIX|g" "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
 
-          echo "=== PKG-CONFIG test ==="
+          # Проверка pkg-config
           export PKG_CONFIG_PATH="$WHISPER_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
-          pkg-config --exists whisper && echo "✅ whisper.pc found" || (echo "❌ whisper.pc missing"; exit 1)
+          pkg-config --exists whisper
           pkg-config --modversion whisper
 
       - name: Build FFmpeg (LGPL, shared, +whisper)
@@ -94,25 +104,19 @@ jobs:
 
       - name: Verify build and LGPL compliance
         run: |
-          echo "=== FFmpeg build verification ==="
+          set -eux
           "$INSTALL_PREFIX/bin/ffmpeg" -version
-          echo "=== Whisper filter check ==="
           "$INSTALL_PREFIX/bin/ffmpeg" -filters | grep whisper
-          echo "=== LGPL compliance check ==="
           ! "$INSTALL_PREFIX/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"
-          echo "✅ No --enable-gpl in buildconf"
-
-          echo "=== Linked dylibs ==="
           otool -L "$INSTALL_PREFIX/bin/ffmpeg" | sed -n '1,60p'
 
       - name: Package for Flutter (bins + dylibs + headers)
         run: |
+          set -eux
           cd "$INSTALL_PREFIX"
           tar -czf ffmpeg-macos-arm64-lgpl-whisper.tar.gz \
             bin/ffmpeg bin/ffprobe lib/*.dylib include || true
-          echo "=== Package contents ==="
           tar -tzf ffmpeg-macos-arm64-lgpl-whisper.tar.gz | sed -n '1,200p'
-          echo "=== Package size ==="
           ls -lh ffmpeg-macos-arm64-lgpl-whisper.tar.gz
 
       - name: Upload artifacts
