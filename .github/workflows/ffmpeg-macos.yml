@@ -47,15 +47,39 @@ jobs:
           
           # Verify installation
           echo "=== Installation verification ==="
+          ls -la /usr/local/lib/pkgconfig/ || echo "No pkgconfig dir"
           ls -la /usr/local/lib/pkgconfig/whisper.pc || echo "No whisper.pc found"
           ls -la /usr/local/include/whisper.h || echo "No whisper.h found"
           ls -la /usr/local/lib/libwhisper.* || echo "No whisper libs found"
           
           echo "=== PKG-CONFIG test ==="
+          export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
           pkg-config --exists whisper && echo "✅ pkg-config found whisper" || echo "❌ pkg-config failed"
           pkg-config --modversion whisper 2>/dev/null || echo "Cannot get version"
           pkg-config --cflags whisper 2>/dev/null || echo "Cannot get cflags"
           pkg-config --libs whisper 2>/dev/null || echo "Cannot get libs"
+          
+          # If whisper.pc doesn't exist, create it manually
+          if [ ! -f /usr/local/lib/pkgconfig/whisper.pc ]; then
+            echo "=== Creating whisper.pc manually ==="
+            sudo mkdir -p /usr/local/lib/pkgconfig
+            sudo tee /usr/local/lib/pkgconfig/whisper.pc > /dev/null <<EOF
+prefix=/usr/local
+exec_prefix=\${prefix}
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: whisper
+Description: Whisper C++ library
+Version: 1.8.0
+Libs: -L\${libdir} -lwhisper
+Libs.private: -framework Accelerate -framework Foundation -lpthread
+Cflags: -I\${includedir}
+EOF
+            echo "✅ Created whisper.pc manually"
+            cat /usr/local/lib/pkgconfig/whisper.pc
+          fi
 
       - name: Build FFmpeg with whisper support
         run: |
@@ -65,6 +89,16 @@ jobs:
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src
           git checkout "$FFMPEG_TAG"
+          
+          # Ensure PKG_CONFIG_PATH includes /usr/local
+          export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
+          
+          # Final verification before configure
+          echo "=== Pre-configure whisper check ==="
+          pkg-config --exists whisper || { echo "❌ whisper still not found!"; exit 1; }
+          pkg-config --modversion whisper
+          pkg-config --libs whisper
           
           # Configure FFmpeg with LGPL settings + whisper
           ./configure \
