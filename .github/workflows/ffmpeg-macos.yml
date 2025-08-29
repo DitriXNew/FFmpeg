@@ -100,12 +100,12 @@ jobs:
             echo "=== Testing whisper compilation ==="
             
             # Create test file using echo instead of heredoc
-            echo '#include <whisper.h>' > test_whisper.c
-            echo 'int main() {' >> test_whisper.c
-            echo '    struct whisper_context* ctx = whisper_init_from_file("test");' >> test_whisper.c
-            echo '    if (ctx) whisper_free(ctx);' >> test_whisper.c
-            echo '    return 0;' >> test_whisper.c
-            echo '}' >> test_whisper.c
+            echo "#include <whisper.h>" > test_whisper.c
+            echo "int main() {" >> test_whisper.c
+            echo "    struct whisper_context* ctx = whisper_init_from_file(\"test\");" >> test_whisper.c
+            echo "    if (ctx) whisper_free(ctx);" >> test_whisper.c
+            echo "    return 0;" >> test_whisper.c
+            echo "}" >> test_whisper.c
             
             echo "Test compilation command:"
             echo "cc $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper"
