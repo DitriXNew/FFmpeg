@@ -1,4 +1,4 @@
-name: build-ffmpeg-macos-arm64-lgpl-whisper
+name: build-ffmpeg-macos-arm64-lgpl-av1
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
 env:
   FFMPEG_TAG: "n8.0"
   INSTALL_PREFIX: "${{ github.workspace }}/install"
-  WHISPER_PREFIX: "${{ github.workspace }}/whisper-install"
+  DEPS_PREFIX: "${{ github.workspace }}/deps-install"
   MACOSX_DEPLOYMENT_TARGET: "13.0"
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build dependencies (idempotent, minimal)
+      - name: Install build deps (idempotent)
         run: |
           set -euxo pipefail
           export HOMEBREW_NO_AUTO_UPDATE=1
@@ -27,39 +27,58 @@ jobs:
           ensure pkg-config
           ensure nasm
           ensure yasm
-          # Внешние кодеки (libvpx/aom/opus/vorbis/ogg) НЕ ставим — чтобы не тянуть .dylib в финальный бин
+          ensure meson
+          ensure python@3.12
 
-      - name: Build & install whisper.cpp (static libs, Metal ON, BLAS OFF)
+      # -------- dav1d (decoder, static) --------
+      - name: Build & install dav1d (static)
         run: |
           set -euxo pipefail
-          git clone --depth=1 https://github.com/ggml-org/whisper.cpp
-          cmake -S whisper.cpp -B build-whisper \
+          git clone --depth=1 https://code.videolan.org/videolan/dav1d.git
+          meson setup dav1d/build --prefix="$DEPS_PREFIX" \
+                --default-library=static --buildtype=release \
+                -Denable_tools=false -Denable_tests=false
+          ninja -C dav1d/build install
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          pkg-config --exists dav1d && pkg-config --modversion dav1d
+
+      # -------- libaom (encoder/decoder, static) --------
+      - name: Build & install libaom (static)
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 https://aomedia.googlesource.com/aom
+          cmake -S aom -B build-aom \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="$WHISPER_PREFIX" \
-                -DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET \
+                -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
                 -DBUILD_SHARED_LIBS=OFF \
-                -DGGML_METAL=ON \
-                -DGGML_BLAS=OFF \
-                -DWHISPER_BUILD_TESTS=OFF \
-                -DWHISPER_BUILD_EXAMPLES=OFF
-          cmake --build build-whisper --config Release --parallel
-          cmake --install build-whisper
+                -DENABLE_DOCS=OFF -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF \
+                -DENABLE_NASM=ON -DAOM_TARGET_CPU=arm64
+          cmake --build build-aom --parallel
+          cmake --install build-aom
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          # aom.pc может отсутствовать; это ок — FFmpeg найдёт через -laom
+          ls -la "$DEPS_PREFIX/lib" | sed -n '1,200p'
 
-          echo "=== Installed files ==="
-          ls -la "$WHISPER_PREFIX/include/whisper.h"
-          ls -la "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-          ls -la "$WHISPER_PREFIX/lib"/libwhisper.a "$WHISPER_PREFIX/lib"/libggml*.a
+      # -------- SVT-AV1 (encoder, static) --------
+      - name: Build & install SVT-AV1 (static)
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 https://gitlab.com/AOMediaCodec/SVT-AV1.git
+          cmake -S SVT-AV1 -B build-svt \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DBUILD_APPS=OFF -DBUILD_TESTING=OFF
+          cmake --build build-svt --parallel
+          cmake --install build-svt
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          (pkg-config --exists SvtAv1Enc && pkg-config --modversion SvtAv1Enc) || true
 
-          echo "=== PKG-CONFIG test ==="
-          export PKG_CONFIG_PATH="$WHISPER_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          pkg-config --exists whisper && echo "✅ whisper.pc found"
-          pkg-config --modversion whisper
-          pkg-config --cflags whisper
-          pkg-config --libs whisper
-
-      - name: Build FFmpeg (LGPL, static, +whisper, no external brew codecs)
+      # -------- FFmpeg (static, LGPL, AV1 enabled) --------
+      - name: Build FFmpeg (LGPL, static, +libdav1d +libaom +libsvtav1)
         env:
-          PKG_CONFIG_PATH: "${{ env.WHISPER_PREFIX }}/lib/pkgconfig:${{ env.PKG_CONFIG_PATH }}"
+          PKG_CONFIG_PATH: "${{ env.DEPS_PREFIX }}/lib/pkgconfig:${{ env.PKG_CONFIG_PATH }}"
+          PKG_CONFIG: "pkg-config --static"
         run: |
           set -euxo pipefail
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
@@ -67,46 +86,49 @@ jobs:
           git checkout "$FFMPEG_TAG"
 
           export MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET
+          export LDFLAGS="-L$DEPS_PREFIX/lib"
+          export CFLAGS="-I$DEPS_PREFIX/include"
+          export CPPFLAGS="$CFLAGS"
 
           ./configure \
             --prefix="$INSTALL_PREFIX" \
             --arch=arm64 \
             --target-os=darwin \
-            --enable-whisper \
+            --disable-gpl --disable-nonfree \
+            --enable-static --disable-shared \
+            --enable-pic \
+            --disable-debug --disable-doc \
             --enable-videotoolbox \
-            --disable-gpl \
-            --disable-nonfree \
-            --enable-static \
-            --disable-shared \
-            --disable-debug \
-            --disable-doc \
-            --enable-pic
-            # Внешние либы (aom/vpx/opus/vorbis/ogg) не включаем, чтобы не получить зависимости на их .dylib
+            --enable-libdav1d \
+            --enable-libaom \
+            --enable-libsvtav1
 
           make -j"$(sysctl -n hw.ncpu)"
           make install
 
-      - name: Verify build (no rpath issues) and LGPL compliance
+      - name: Verify build (AV1 present, LGPL)
         run: |
           set -euxo pipefail
           "$INSTALL_PREFIX/bin/ffmpeg" -version
-          "$INSTALL_PREFIX/bin/ffmpeg" -filters | grep whisper
+          echo "=== check encoders/decoders ==="
+          "$INSTALL_PREFIX/bin/ffmpeg" -encoders  | grep -E "libaom|svtav1"
+          "$INSTALL_PREFIX/bin/ffmpeg" -decoders  | grep -E "dav1d|libaom-av1"
+          echo "=== check no GPL ==="
           ! "$INSTALL_PREFIX/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"
           echo "✅ LGPL (no --enable-gpl)"
-          echo "=== Linked libs (should be только системные фреймворки) ==="
+          echo "=== otool ==="
           otool -L "$INSTALL_PREFIX/bin/ffmpeg" | sed -n '1,120p'
 
-      - name: Package for Flutter (.tar.gz with ffmpeg + ffprobe)
+      - name: Package artifact (ffmpeg + ffprobe)
         run: |
           set -euxo pipefail
           cd "$INSTALL_PREFIX"
-          tar -czf ffmpeg-macos-arm64-lgpl-whisper.tar.gz bin/ffmpeg bin/ffprobe
-          echo "=== Package contents ==="
-          tar -tzf ffmpeg-macos-arm64-lgpl-whisper.tar.gz
-          ls -lh ffmpeg-macos-arm64-lgpl-whisper.tar.gz
+          tar -czf ffmpeg-macos-arm64-lgpl-av1.tar.gz bin/ffmpeg bin/ffprobe
+          tar -tzf ffmpeg-macos-arm64-lgpl-av1.tar.gz
+          ls -lh ffmpeg-macos-arm64-lgpl-av1.tar.gz
 
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ffmpeg-macos-arm64-lgpl-whisper
-          path: ${{ env.INSTALL_PREFIX }}/ffmpeg-macos-arm64-lgpl-whisper.tar.gz
+          name: ffmpeg-macos-arm64-lgpl-av1
+          path: ${{ env.INSTALL_PREFIX }}/ffmpeg-macos-arm64-lgpl-av1.tar.gz
