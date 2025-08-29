@@ -44,8 +44,8 @@ jobs:
         run: |
           set -eux
           
-          # Clone whisper.cpp
-          git clone --depth=1 https://github.com/ggml-org/whisper.cpp
+          # Clone specific release instead of master
+          git clone --depth=1 --branch v1.7.6 https://github.com/ggml-org/whisper.cpp
           
           # Configure build
           cmake -S whisper.cpp -B build-whisper \
@@ -64,22 +64,82 @@ jobs:
           # Install (creates whisper.pc automatically)
           cmake --install build-whisper
           
-          # Verify installation
+          # Verify installation and version
           echo "=== Whisper installation check ==="
           ls -la "$WHISPER_PREFIX/lib/pkgconfig/" || echo "No pkgconfig dir"
           ls -la "$WHISPER_PREFIX/include/whisper.h" || echo "No whisper.h"
           
-          # Test pkg-config (initialize PKG_CONFIG_PATH first)
+          # Check the generated whisper.pc file
+          echo "=== Generated whisper.pc content ==="
+          cat "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc" || echo "No whisper.pc found"
+          
+          # Test pkg-config
           export PKG_CONFIG_PATH="${WHISPER_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
           
           if pkg-config --exists whisper; then
-            echo "✅ whisper found via pkg-config"
-            pkg-config --modversion whisper
-            pkg-config --cflags whisper
-            pkg-config --libs whisper
+            echo "whisper found via pkg-config"
+            WHISPER_VERSION=$(pkg-config --modversion whisper)
+            echo "Detected version: $WHISPER_VERSION"
+            echo "Required version: >= 1.7.5"
+            
+            # Verify version meets FFmpeg requirement
+            if pkg-config --atleast-version=1.7.5 whisper; then
+              echo "Version check passed"
+            else
+              echo "Version check failed"
+              exit 1
+            fi
+            
+            echo "=== pkg-config output ==="
+            echo "Cflags: $(pkg-config --cflags whisper)"
+            echo "Libs: $(pkg-config --libs whisper)"
+            echo "Static libs: $(pkg-config --libs --static whisper || echo 'N/A')"
+            
+            # Test actual compilation to see what FFmpeg configure checks
+            echo "=== Testing whisper compilation ==="
+            cat > test_whisper.c << 'EOF'
+#include <whisper.h>
+int main() {
+    struct whisper_context* ctx = whisper_init_from_file("test");
+    if (ctx) whisper_free(ctx);
+    return 0;
+}
+EOF
+            
+            echo "Test compilation command:"
+            echo "cc $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper"
+            
+            if cc $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper 2>&1; then
+              echo "Test compilation successful"
+              rm -f test_whisper test_whisper.c
+            else
+              echo "Test compilation failed - this is likely why FFmpeg configure fails"
+              echo "Fixing whisper.pc with proper macOS frameworks..."
+              
+              # Add required macOS frameworks to whisper.pc
+              sed -i '' 's|Libs: .*|Libs: -L${libdir} -lwhisper -lggml -lggml-base|' "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              sed -i '' '/Libs:/a\
+Libs.private: -framework Accelerate -framework Foundation -framework Metal -framework MetalKit
+' "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              
+              echo "Updated whisper.pc:"
+              cat "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              
+              # Test again
+              echo "Retesting compilation..."
+              if cc $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper 2>&1; then
+                echo "Test compilation now successful"
+                rm -f test_whisper test_whisper.c
+              else
+                echo "Compilation still fails"
+                rm -f test_whisper.c
+                exit 1
+              fi
+            fi
+            
           else
-            echo "❌ whisper not found via pkg-config"
+            echo "whisper not found via pkg-config"
             exit 1
           fi
 
