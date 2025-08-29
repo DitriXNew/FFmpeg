@@ -98,14 +98,14 @@ jobs:
             
             # Test actual compilation to see what FFmpeg configure checks
             echo "=== Testing whisper compilation ==="
-            cat > test_whisper.c << 'EOF'
-#include <whisper.h>
-int main() {
-    struct whisper_context* ctx = whisper_init_from_file("test");
-    if (ctx) whisper_free(ctx);
-    return 0;
-}
-EOF
+            
+            # Create test file using echo instead of heredoc
+            echo '#include <whisper.h>' > test_whisper.c
+            echo 'int main() {' >> test_whisper.c
+            echo '    struct whisper_context* ctx = whisper_init_from_file("test");' >> test_whisper.c
+            echo '    if (ctx) whisper_free(ctx);' >> test_whisper.c
+            echo '    return 0;' >> test_whisper.c
+            echo '}' >> test_whisper.c
             
             echo "Test compilation command:"
             echo "cc $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper"
@@ -117,11 +117,18 @@ EOF
               echo "Test compilation failed - this is likely why FFmpeg configure fails"
               echo "Fixing whisper.pc with proper macOS frameworks..."
               
-              # Add required macOS frameworks to whisper.pc
-              sed -i '' 's|Libs: .*|Libs: -L${libdir} -lwhisper -lggml -lggml-base|' "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              sed -i '' '/Libs:/a\
-Libs.private: -framework Accelerate -framework Foundation -framework Metal -framework MetalKit
-' "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              # Create corrected whisper.pc using echo instead of heredoc
+              echo "prefix=$WHISPER_PREFIX" > "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              echo 'exec_prefix=${prefix}' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              echo 'libdir=${prefix}/lib' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              echo 'includedir=${prefix}/include' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              echo '' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              echo 'Name: whisper' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              echo 'Description: whisper.cpp C API' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              echo 'Version: 1.7.6' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              echo 'Libs: -L${libdir} -lwhisper -lggml -lggml-base' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              echo 'Libs.private: -framework Accelerate -framework Foundation -framework Metal -framework MetalKit -lpthread' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              echo 'Cflags: -I${includedir}' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
               
               echo "Updated whisper.pc:"
               cat "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
