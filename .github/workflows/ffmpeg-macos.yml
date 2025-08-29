@@ -108,14 +108,14 @@ jobs:
             echo "}" >> test_whisper.c
             
             echo "Test compilation command:"
-            echo "cc $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper"
+            echo "c++ $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper"
             
-            if cc $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper 2>&1; then
+            if c++ $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper 2>&1; then
               echo "Test compilation successful"
               rm -f test_whisper test_whisper.c
             else
               echo "Test compilation failed - this is likely why FFmpeg configure fails"
-              echo "Fixing whisper.pc with proper macOS frameworks..."
+              echo "Fixing whisper.pc with proper macOS frameworks and C++ linking..."
               
               # Create corrected whisper.pc using echo instead of heredoc
               echo "prefix=$WHISPER_PREFIX" > "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
@@ -126,22 +126,29 @@ jobs:
               echo 'Name: whisper' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
               echo 'Description: whisper.cpp C API' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
               echo 'Version: 1.7.6' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              echo 'Libs: -L${libdir} -lwhisper -lggml -lggml-base' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              echo 'Libs.private: -framework Accelerate -framework Foundation -framework Metal -framework MetalKit -lpthread' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              echo 'Libs: -L${libdir} -lwhisper -lggml-metal -lggml-cpu -lggml-base -lggml -lc++' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+              echo 'Libs.private: -framework Accelerate -framework Foundation -framework Metal -framework MetalKit -framework CoreGraphics -lpthread' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
               echo 'Cflags: -I${includedir}' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
               
               echo "Updated whisper.pc:"
               cat "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
               
-              # Test again
-              echo "Retesting compilation..."
-              if cc $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper 2>&1; then
+              # Test again with C++ compiler
+              echo "Retesting compilation with c++..."
+              if c++ $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper 2>&1; then
                 echo "Test compilation now successful"
                 rm -f test_whisper test_whisper.c
               else
-                echo "Compilation still fails"
-                rm -f test_whisper.c
-                exit 1
+                echo "Compilation still fails, trying direct linking..."
+                # Fallback: try direct library linking
+                if c++ $(pkg-config --cflags whisper) test_whisper.c -L"$WHISPER_PREFIX/lib" -lwhisper -lggml-metal -lggml-cpu -lggml-base -lggml -framework Accelerate -framework Foundation -framework Metal -framework MetalKit -o test_whisper 2>&1; then
+                  echo "Direct linking successful"
+                  rm -f test_whisper test_whisper.c
+                else
+                  echo "All compilation attempts failed"
+                  rm -f test_whisper.c
+                  exit 1
+                fi
               fi
             fi
             
