@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build dependencies (idempotent)
+      - name: Install build dependencies (idempotent, minimal)
         run: |
           set -euxo pipefail
           export HOMEBREW_NO_AUTO_UPDATE=1
@@ -27,68 +27,37 @@ jobs:
           ensure pkg-config
           ensure nasm
           ensure yasm
-          ensure libvpx
-          ensure aom
-          ensure opus
-          ensure libvorbis
-          ensure libogg
+          # Внешние кодеки (libvpx/aom/opus/vorbis/ogg) НЕ ставим — чтобы не тянуть .dylib в финальный бин
 
-      - name: Download and setup whisper.cpp XCFramework (macOS slice)
+      - name: Build & install whisper.cpp (static libs, Metal ON, BLAS OFF)
         run: |
           set -euxo pipefail
-          mkdir -p "$WHISPER_PREFIX/Frameworks" "$WHISPER_PREFIX/lib/pkgconfig"
+          git clone --depth=1 https://github.com/ggml-org/whisper.cpp
+          cmake -S whisper.cpp -B build-whisper \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX="$WHISPER_PREFIX" \
+                -DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DGGML_METAL=ON \
+                -DGGML_BLAS=OFF \
+                -DWHISPER_BUILD_TESTS=OFF \
+                -DWHISPER_BUILD_EXAMPLES=OFF
+          cmake --build build-whisper --config Release --parallel
+          cmake --install build-whisper
 
-          # 1) Download official XCFramework
-          curl -L -o whisper-xcframework.zip \
-            "https://github.com/ggml-org/whisper.cpp/releases/download/v1.7.6/whisper-v1.7.6-xcframework.zip"
-          unzip -q whisper-xcframework.zip
+          echo "=== Installed files ==="
+          ls -la "$WHISPER_PREFIX/include/whisper.h"
+          ls -la "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+          ls -la "$WHISPER_PREFIX/lib"/libwhisper.a "$WHISPER_PREFIX/lib"/libggml*.a
 
-          # 2) Locate XCFramework and macOS slice (usually "macos-arm64_x86_64" or similar)
-          XCFRAMEWORK=$(find . -maxdepth 3 -type d -name "whisper.xcframework" | head -1)
-          echo "XCFRAMEWORK = $XCFRAMEWORK"
-
-          MACOS_DIR=$(find "$XCFRAMEWORK" -maxdepth 2 -type d -name "macos*" | head -1)
-          if [ -z "${MACOS_DIR:-}" ]; then
-            echo "❌ macOS slice not found in XCFramework"
-            find "$XCFRAMEWORK" -maxdepth 2 -type d -print
-            exit 1
-          fi
-          echo "Using macOS slice: $MACOS_DIR"
-
-          # 3) Copy whisper.framework for macOS into our prefix
-          if [ ! -d "$MACOS_DIR/whisper.framework" ]; then
-            echo "❌ whisper.framework not found in macOS slice"
-            find "$MACOS_DIR" -maxdepth 2 -print
-            exit 1
-          fi
-          cp -R "$MACOS_DIR/whisper.framework" "$WHISPER_PREFIX/Frameworks/"
-
-          # 4) Headers path inside the framework
-          ln -sf "../Frameworks/whisper.framework/Headers" "$WHISPER_PREFIX/include" || true
-
-          # 5) Create pkg-config file that points to the framework
-          cat > "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc" <<'PC'
-          prefix=@PREFIX@
-          exec_prefix=${prefix}
-          frameworkdir=${prefix}/Frameworks
-          includedir=${frameworkdir}/whisper.framework/Headers
-
-          Name: whisper
-          Description: whisper.cpp (XCFramework, macOS)
-          Version: 1.7.6
-          Libs: -F${frameworkdir} -framework whisper -framework Metal -framework MetalKit -framework Foundation -framework Accelerate -lc++ -lpthread
-          Cflags: -I${includedir}
-          PC
-          sed -i '' "s|@PREFIX@|$WHISPER_PREFIX|g" "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-
-          # 6) Sanity check
+          echo "=== PKG-CONFIG test ==="
           export PKG_CONFIG_PATH="$WHISPER_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          pkg-config --exists whisper
+          pkg-config --exists whisper && echo "✅ whisper.pc found"
           pkg-config --modversion whisper
-          pkg-config --libs whisper
           pkg-config --cflags whisper
+          pkg-config --libs whisper
 
-      - name: Build FFmpeg (LGPL, static, +whisper)
+      - name: Build FFmpeg (LGPL, static, +whisper, no external brew codecs)
         env:
           PKG_CONFIG_PATH: "${{ env.WHISPER_PREFIX }}/lib/pkgconfig:${{ env.PKG_CONFIG_PATH }}"
         run: |
@@ -109,33 +78,29 @@ jobs:
             --disable-nonfree \
             --enable-static \
             --disable-shared \
-            --enable-libvpx \
-            --enable-libaom \
-            --enable-libopus \
-            --enable-libvorbis \
             --disable-debug \
             --disable-doc \
             --enable-pic
+            # Внешние либы (aom/vpx/opus/vorbis/ogg) не включаем, чтобы не получить зависимости на их .dylib
 
           make -j"$(sysctl -n hw.ncpu)"
           make install
 
-      - name: Verify build and LGPL compliance
+      - name: Verify build (no rpath issues) and LGPL compliance
         run: |
           set -euxo pipefail
           "$INSTALL_PREFIX/bin/ffmpeg" -version
           "$INSTALL_PREFIX/bin/ffmpeg" -filters | grep whisper
           ! "$INSTALL_PREFIX/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"
           echo "✅ LGPL (no --enable-gpl)"
-          echo "=== Linked libs (ffmpeg) ==="
+          echo "=== Linked libs (should be только системные фреймворки) ==="
           otool -L "$INSTALL_PREFIX/bin/ffmpeg" | sed -n '1,120p'
 
       - name: Package for Flutter (.tar.gz with ffmpeg + ffprobe)
         run: |
           set -euxo pipefail
           cd "$INSTALL_PREFIX"
-          tar -czf ffmpeg-macos-arm64-lgpl-whisper.tar.gz \
-            bin/ffmpeg bin/ffprobe
+          tar -czf ffmpeg-macos-arm64-lgpl-whisper.tar.gz bin/ffmpeg bin/ffprobe
           echo "=== Package contents ==="
           tar -tzf ffmpeg-macos-arm64-lgpl-whisper.tar.gz
           ls -lh ffmpeg-macos-arm64-lgpl-whisper.tar.gz
