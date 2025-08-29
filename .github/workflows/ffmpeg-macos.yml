@@ -1,4 +1,4 @@
-name: build-ffmpeg-macos-arm64-lgpl-av1
+name: build-ffmpeg-macos-arm64-lgpl-av1-encoders-only
 
 on:
   workflow_dispatch:
@@ -27,22 +27,8 @@ jobs:
           ensure pkg-config
           ensure nasm
           ensure yasm
-          ensure meson
-          ensure python@3.12
 
-      # -------- dav1d (decoder, static) --------
-      - name: Build & install dav1d (static)
-        run: |
-          set -euxo pipefail
-          git clone --depth=1 https://code.videolan.org/videolan/dav1d.git
-          meson setup dav1d/build --prefix="$DEPS_PREFIX" \
-                --default-library=static --buildtype=release \
-                -Denable_tools=false -Denable_tests=false
-          ninja -C dav1d/build install
-          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          pkg-config --exists dav1d && pkg-config --modversion dav1d
-
-      # -------- libaom (encoder/decoder, static) --------
+      # -------- libaom (AV1 encoder/decoder, we use it as encoder; static) --------
       - name: Build & install libaom (static)
         run: |
           set -euxo pipefail
@@ -55,11 +41,9 @@ jobs:
                 -DENABLE_NASM=ON -DAOM_TARGET_CPU=arm64
           cmake --build build-aom --parallel
           cmake --install build-aom
-          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          # aom.pc может отсутствовать; это ок — FFmpeg найдёт через -laom
           ls -la "$DEPS_PREFIX/lib" | sed -n '1,200p'
 
-      # -------- SVT-AV1 (encoder, static) --------
+      # -------- SVT-AV1 (AV1 encoder; static) --------
       - name: Build & install SVT-AV1 (static)
         run: |
           set -euxo pipefail
@@ -71,11 +55,10 @@ jobs:
                 -DBUILD_APPS=OFF -DBUILD_TESTING=OFF
           cmake --build build-svt --parallel
           cmake --install build-svt
-          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          (pkg-config --exists SvtAv1Enc && pkg-config --modversion SvtAv1Enc) || true
+          ls -la "$DEPS_PREFIX/lib" | sed -n '1,200p'
 
-      # -------- FFmpeg (static, LGPL, AV1 enabled) --------
-      - name: Build FFmpeg (LGPL, static, +libdav1d +libaom +libsvtav1)
+      # -------- FFmpeg (static, LGPL, encoders-only: libaom-av1 + svtav1) --------
+      - name: Build FFmpeg (LGPL, static, encoders-only AV1)
         env:
           PKG_CONFIG_PATH: "${{ env.DEPS_PREFIX }}/lib/pkgconfig:${{ env.PKG_CONFIG_PATH }}"
           PKG_CONFIG: "pkg-config --static"
@@ -99,36 +82,40 @@ jobs:
             --enable-pic \
             --disable-debug --disable-doc \
             --enable-videotoolbox \
-            --enable-libdav1d \
+            --disable-decoders \
+            --disable-encoders \
+            --enable-encoder=libaom_av1 \
+            --enable-encoder=libsvtav1 \
             --enable-libaom \
             --enable-libsvtav1
 
           make -j"$(sysctl -n hw.ncpu)"
           make install
 
-      - name: Verify build (AV1 present, LGPL)
+      - name: Verify build (AV1 encoders present, no decoders, LGPL)
         run: |
           set -euxo pipefail
           "$INSTALL_PREFIX/bin/ffmpeg" -version
-          echo "=== check encoders/decoders ==="
-          "$INSTALL_PREFIX/bin/ffmpeg" -encoders  | grep -E "libaom|svtav1"
-          "$INSTALL_PREFIX/bin/ffmpeg" -decoders  | grep -E "dav1d|libaom-av1"
+          echo "=== encoders ==="
+          "$INSTALL_PREFIX/bin/ffmpeg" -encoders  | grep -E "libaom_av1|svtav1"
+          echo "=== decoders (should be empty or very few builtins) ==="
+          "$INSTALL_PREFIX/bin/ffmpeg" -decoders | head -20
           echo "=== check no GPL ==="
           ! "$INSTALL_PREFIX/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"
           echo "✅ LGPL (no --enable-gpl)"
-          echo "=== otool ==="
+          echo "=== link info ==="
           otool -L "$INSTALL_PREFIX/bin/ffmpeg" | sed -n '1,120p'
 
       - name: Package artifact (ffmpeg + ffprobe)
         run: |
           set -euxo pipefail
           cd "$INSTALL_PREFIX"
-          tar -czf ffmpeg-macos-arm64-lgpl-av1.tar.gz bin/ffmpeg bin/ffprobe
-          tar -tzf ffmpeg-macos-arm64-lgpl-av1.tar.gz
-          ls -lh ffmpeg-macos-arm64-lgpl-av1.tar.gz
+          tar -czf ffmpeg-macos-arm64-lgpl-av1-encoders-only.tar.gz bin/ffmpeg bin/ffprobe
+          tar -tzf ffmpeg-macos-arm64-lgpl-av1-encoders-only.tar.gz
+          ls -lh ffmpeg-macos-arm64-lgpl-av1-encoders-only.tar.gz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ffmpeg-macos-arm64-lgpl-av1
-          path: ${{ env.INSTALL_PREFIX }}/ffmpeg-macos-arm64-lgpl-av1.tar.gz
+          name: ffmpeg-macos-arm64-lgpl-av1-encoders-only
+          path: ${{ env.INSTALL_PREFIX }}/ffmpeg-macos-arm64-lgpl-av1-encoders-only.tar.gz
