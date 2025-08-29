@@ -1,4 +1,5 @@
-# FFmpeg macOS ARM64 build with whisper.cpp for Flutter integration
+# FFmpeg macOS ARM64 (LGPL) + whisper filter (via whisper.cpp XCFramework)
+# Static FFmpeg (no external dylibs to ship), ready to bundle into a .app
 name: build-ffmpeg-macos-arm64-lgpl-whisper
 
 on:
@@ -18,17 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install build dependencies (idempotent)
         run: |
-          set -eux
+          set -euxo pipefail
           export HOMEBREW_NO_AUTO_UPDATE=1
-          ensure() { 
-            if brew list --versions "$1" >/dev/null 2>&1; then 
-              echo "✓ $1 already installed"; 
-            else 
-              brew install "$1"; 
-            fi 
-          }
+          ensure () { if brew list --versions "$1" >/dev/null 2>&1; then echo "✓ $1 already installed"; else brew install "$1"; fi }
           ensure cmake
           ensure ninja
           ensure pkg-config
@@ -40,141 +35,81 @@ jobs:
           ensure libvorbis
           ensure libogg
 
-      - name: Build and install whisper.cpp
+      - name: Download and setup whisper.cpp XCFramework (macOS arm64 only)
         run: |
-          set -eux
-          
-          # Clone specific release instead of master
-          git clone --depth=1 --branch v1.7.6 https://github.com/ggml-org/whisper.cpp
-          
-          # Configure build
-          cmake -S whisper.cpp -B build-whisper \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="$WHISPER_PREFIX" \
-                -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
-                -DBUILD_SHARED_LIBS=OFF \
-                -DGGML_METAL=ON \
-                -DGGML_BLAS=OFF \
-                -DWHISPER_BUILD_TESTS=OFF \
-                -DWHISPER_BUILD_EXAMPLES=OFF
-          
-          # Build
-          cmake --build build-whisper --config Release --parallel
-          
-          # Install (creates whisper.pc automatically)
-          cmake --install build-whisper
-          
-          # Verify installation and version
-          echo "=== Whisper installation check ==="
-          ls -la "$WHISPER_PREFIX/lib/pkgconfig/" || echo "No pkgconfig dir"
-          ls -la "$WHISPER_PREFIX/include/whisper.h" || echo "No whisper.h"
-          
-          # Check the generated whisper.pc file
-          echo "=== Generated whisper.pc content ==="
-          cat "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc" || echo "No whisper.pc found"
-          
-          # Test pkg-config
-          export PKG_CONFIG_PATH="${WHISPER_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
-          
-          if pkg-config --exists whisper; then
-            echo "whisper found via pkg-config"
-            WHISPER_VERSION=$(pkg-config --modversion whisper)
-            echo "Detected version: $WHISPER_VERSION"
-            echo "Required version: >= 1.7.5"
-            
-            # Verify version meets FFmpeg requirement
-            if pkg-config --atleast-version=1.7.5 whisper; then
-              echo "Version check passed"
-            else
-              echo "Version check failed"
-              exit 1
-            fi
-            
-            echo "=== pkg-config output ==="
-            echo "Cflags: $(pkg-config --cflags whisper)"
-            echo "Libs: $(pkg-config --libs whisper)"
-            echo "Static libs: $(pkg-config --libs --static whisper || echo 'N/A')"
-            
-            # Test actual compilation to see what FFmpeg configure checks
-            echo "=== Testing whisper compilation ==="
-            
-            # Create test file using echo instead of heredoc
-            echo "#include <whisper.h>" > test_whisper.c
-            echo "int main() {" >> test_whisper.c
-            echo "    struct whisper_context* ctx = whisper_init_from_file(\"test\");" >> test_whisper.c
-            echo "    if (ctx) whisper_free(ctx);" >> test_whisper.c
-            echo "    return 0;" >> test_whisper.c
-            echo "}" >> test_whisper.c
-            
-            echo "Test compilation command:"
-            echo "c++ $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper"
-            
-            if c++ $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper 2>&1; then
-              echo "Test compilation successful"
-              rm -f test_whisper test_whisper.c
-            else
-              echo "Test compilation failed - this is likely why FFmpeg configure fails"
-              echo "Fixing whisper.pc with proper macOS frameworks and C++ linking..."
-              
-              # Create corrected whisper.pc using echo instead of heredoc
-              echo "prefix=$WHISPER_PREFIX" > "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              echo 'exec_prefix=${prefix}' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              echo 'libdir=${prefix}/lib' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              echo 'includedir=${prefix}/include' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              echo '' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              echo 'Name: whisper' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              echo 'Description: whisper.cpp C API' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              echo 'Version: 1.7.6' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              echo 'Libs: -L${libdir} -lwhisper -lggml-metal -lggml-cpu -lggml-base -lggml -lc++' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              echo 'Libs.private: -framework Accelerate -framework Foundation -framework Metal -framework MetalKit -framework CoreGraphics -lpthread' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              echo 'Cflags: -I${includedir}' >> "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              
-              echo "Updated whisper.pc:"
-              cat "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
-              
-              # Test again with C++ compiler
-              echo "Retesting compilation with c++..."
-              if c++ $(pkg-config --cflags whisper) test_whisper.c $(pkg-config --libs whisper) -o test_whisper 2>&1; then
-                echo "Test compilation now successful"
-                rm -f test_whisper test_whisper.c
-              else
-                echo "Compilation still fails, trying direct linking..."
-                # Fallback: try direct library linking
-                if c++ $(pkg-config --cflags whisper) test_whisper.c -L"$WHISPER_PREFIX/lib" -lwhisper -lggml-metal -lggml-cpu -lggml-base -lggml -framework Accelerate -framework Foundation -framework Metal -framework MetalKit -o test_whisper 2>&1; then
-                  echo "Direct linking successful"
-                  rm -f test_whisper test_whisper.c
-                else
-                  echo "All compilation attempts failed"
-                  rm -f test_whisper.c
-                  exit 1
-                fi
-              fi
-            fi
-            
-          else
-            echo "whisper not found via pkg-config"
+          set -euxo pipefail
+
+          mkdir -p "$WHISPER_PREFIX/lib" "$WHISPER_PREFIX/include" "$WHISPER_PREFIX/lib/pkgconfig"
+
+          curl -L -o whisper-xcframework.zip \
+            "https://github.com/ggml-org/whisper.cpp/releases/download/v1.7.6/whisper-v1.7.6-xcframework.zip"
+          unzip -q whisper-xcframework.zip
+
+          # Найдём путь к XCFramework
+          XCFRAMEWORK=$(find . -maxdepth 2 -type d -name "*.xcframework" | head -1)
+          echo "XCFRAMEWORK = $XCFRAMEWORK"
+
+          # Точный срез под macOS ARM64 (обычно каталог называется 'macos-arm64')
+          MACOS_ARM_DIR=$(find "$XCFRAMEWORK" -type d -name "macos-arm64" | head -1)
+          if [ -z "$MACOS_ARM_DIR" ]; then
+            echo "❌ macos-arm64 slice not found in XCFramework"
             exit 1
           fi
+          echo "Using slice: $MACOS_ARM_DIR"
 
-      - name: Build FFmpeg with whisper support
+          # Копируем заголовки и именно arm64-библиотеки
+          # (внутри среза обычно лежат include/whisper.h и lib*.a)
+          if [ -d "$MACOS_ARM_DIR/Headers" ]; then
+            cp -v "$MACOS_ARM_DIR/Headers/"*.h "$WHISPER_PREFIX/include/" || true
+          fi
+          # Иногда заголовки лежат уровнем выше:
+          find "$XCFRAMEWORK" -maxdepth 3 -name "whisper.h" -exec cp -v {} "$WHISPER_PREFIX/include/" \; || true
+          find "$XCFRAMEWORK" -maxdepth 3 -name "ggml.h"    -exec cp -v {} "$WHISPER_PREFIX/include/" \; || true
+
+          # Копируем только arm64 статические библиотеки
+          find "$MACOS_ARM_DIR" -maxdepth 2 -name "lib*.a" -exec cp -v {} "$WHISPER_PREFIX/lib/" \;
+
+          echo "=== Installed headers ==="
+          ls -la "$WHISPER_PREFIX/include" || true
+          echo "=== Installed libs ==="
+          ls -la "$WHISPER_PREFIX/lib"
+
+          # Создаём корректный whisper.pc для pkg-config
+          cat > "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc" <<'PC'
+          prefix=@PREFIX@
+          exec_prefix=${prefix}
+          libdir=${prefix}/lib
+          includedir=${prefix}/include
+
+          Name: whisper
+          Description: whisper.cpp C API (macOS arm64, XCFramework)
+          Version: 1.7.6
+          # В Libs укажем всё, что нужно линковщику во время configure (не только Libs.private),
+          # иначе тест линковки у FFmpeg может провалиться.
+          Libs: -L${libdir} -lwhisper -lggml -lggml-metal -lggml-base -framework Metal -framework MetalKit -framework Foundation -framework Accelerate -lc++ -lpthread
+          Cflags: -I${includedir}
+          PC
+          sed -i '' "s|@PREFIX@|$WHISPER_PREFIX|g" "$WHISPER_PREFIX/lib/pkgconfig/whisper.pc"
+
+          echo "=== PKG-CONFIG test ==="
+          export PKG_CONFIG_PATH="$WHISPER_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          pkg-config --exists whisper && echo "✅ whisper.pc found"
+          pkg-config --modversion whisper
+          pkg-config --cflags whisper
+          pkg-config --libs whisper
+
+      - name: Build FFmpeg (LGPL, static, +whisper)
+        env:
+          PKG_CONFIG_PATH: "${{ env.WHISPER_PREFIX }}/lib/pkgconfig:${{ env.PKG_CONFIG_PATH }}"
         run: |
-          set -eux
-          
-          # Clone FFmpeg
+          set -euxo pipefail
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src
           git checkout "$FFMPEG_TAG"
-          
-          # Set environment
-          export MACOSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET"
-          export PKG_CONFIG_PATH="${WHISPER_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          
-          echo "=== Environment check ==="
-          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
-          pkg-config --exists whisper || { echo "❌ whisper not found before configure"; exit 1; }
-          
-          # Configure FFmpeg
+
+          export MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET
+
+          # Статическая сборка FFmpeg: проще вкладывать в .app, нет зависимости от brew .dylib на машинах пользователей
           ./configure \
             --prefix="$INSTALL_PREFIX" \
             --arch=arm64 \
@@ -183,8 +118,8 @@ jobs:
             --enable-videotoolbox \
             --disable-gpl \
             --disable-nonfree \
-            --disable-static \
-            --enable-shared \
+            --enable-static \
+            --disable-shared \
             --enable-libvpx \
             --enable-libaom \
             --enable-libopus \
@@ -192,55 +127,29 @@ jobs:
             --disable-debug \
             --disable-doc \
             --enable-pic
-          
-          # Build and install
+
           make -j"$(sysctl -n hw.ncpu)"
           make install
 
       - name: Verify build and LGPL compliance
         run: |
-          set -eux
-          echo "=== FFmpeg build verification ==="
+          set -euxo pipefail
           "$INSTALL_PREFIX/bin/ffmpeg" -version
-          echo ""
-          
-          echo "=== Whisper filter check ==="
-          "$INSTALL_PREFIX/bin/ffmpeg" -filters | grep whisper || echo "❌ No whisper filter"
-          echo ""
-          
-          echo "=== LGPL compliance check ==="
-          "$INSTALL_PREFIX/bin/ffmpeg" -buildconf
-          if "$INSTALL_PREFIX/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"; then
-            echo "❌ ERROR: GPL found in build!"
-            exit 1
-          fi
-          echo "✅ LGPL compliance verified"
-          echo ""
-          
-          echo "=== Dynamic libraries ==="
-          ls -la "$INSTALL_PREFIX/lib/"*.dylib || echo "No dylib files"
-          echo ""
-          
-          echo "=== Dependencies check ==="
-          otool -L "$INSTALL_PREFIX/bin/ffmpeg" | head -20
+          "$INSTALL_PREFIX/bin/ffmpeg" -filters | grep whisper
+          # Проверяем, что нет GPL
+          ! "$INSTALL_PREFIX/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"
+          echo "✅ LGPL (no --enable-gpl)"
+          echo "=== Linked libs (should be mostly system frameworks) ==="
+          otool -L "$INSTALL_PREFIX/bin/ffmpeg" | sed -n '1,120p'
 
-      - name: Package for Flutter
+      - name: Package for Flutter (.tar.gz with ffmpeg + ffprobe only)
         run: |
-          set -eux
+          set -euxo pipefail
           cd "$INSTALL_PREFIX"
-          
-          # Create package with all necessary files
           tar -czf ffmpeg-macos-arm64-lgpl-whisper.tar.gz \
-            bin/ffmpeg \
-            bin/ffprobe \
-            lib/*.dylib \
-            include/ || true
-          
+            bin/ffmpeg bin/ffprobe
           echo "=== Package contents ==="
-          tar -tzf ffmpeg-macos-arm64-lgpl-whisper.tar.gz | head -50
-          echo ""
-          
-          echo "=== Package size ==="
+          tar -tzf ffmpeg-macos-arm64-lgpl-whisper.tar.gz
           ls -lh ffmpeg-macos-arm64-lgpl-whisper.tar.gz
 
       - name: Upload artifacts
