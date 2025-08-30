@@ -27,6 +27,9 @@ jobs:
           ensure pkg-config
           ensure nasm
           ensure yasm
+          ensure autoconf
+          ensure automake
+          ensure libtool
           # meson/python не нужны — dav1d не собираем
 
       # -------- libaom (AV1 encoder; static) --------
@@ -86,16 +89,37 @@ jobs:
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           pkg-config --exists ogg && pkg-config --modversion ogg
 
-      # -------- libvorbis (audio encoder; static) --------
-      - name: Build & install libvorbis (static)
+      # -------- libvorbis (audio encoder; static) - FIXED VERSION --------
+      - name: Build & install libvorbis (static) - with macOS compatibility fix
         run: |
           set -euxo pipefail
           cd "${{ github.workspace }}"
+          # Use newer version that has macOS compatibility fixes
           curl -L -o libvorbis.tar.gz https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.gz
           tar -xzf libvorbis.tar.gz
           cd libvorbis-1.3.7
+          
+          # Apply fix for the -force_cpusubtype_ALL linker issue
+          # This patches the configure script to remove the problematic flag
+          if [[ -f configure ]]; then
+            sed -i.bak 's/-force_cpusubtype_ALL//g' configure
+          fi
+          
+          # Also fix it in configure.ac if it exists and regenerate
+          if [[ -f configure.ac ]] || [[ -f configure.in ]]; then
+            if [[ -f configure.ac ]]; then
+              sed -i.bak 's/-force_cpusubtype_ALL//g' configure.ac
+            fi
+            if [[ -f configure.in ]]; then
+              sed -i.bak 's/-force_cpusubtype_ALL//g' configure.in
+            fi
+            # Regenerate configure script
+            autoreconf -fiv
+          fi
+          
           PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
-          ./configure --prefix="$DEPS_PREFIX" --disable-shared --enable-static CFLAGS="-O3"
+          ./configure --prefix="$DEPS_PREFIX" --disable-shared --enable-static CFLAGS="-O3" \
+                      --disable-oggtest
           make -j"$(sysctl -n hw.ncpu)"
           make install
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
@@ -130,13 +154,11 @@ jobs:
             --disable-decoders \
             --disable-encoders \
             \
-            # === VIDEO encoders (royalty-free) ===
             --enable-libaom \
             --enable-libsvtav1 \
             --enable-encoder=libaom_av1 \
             --enable-encoder=libsvtav1 \
             \
-            # === AUDIO encoders (royalty-free) ===
             --enable-libopus \
             --enable-libvorbis \
             --enable-encoder=libopus \
@@ -147,7 +169,6 @@ jobs:
             --enable-encoder=pcm_s24le \
             --enable-encoder=pcm_f32le \
             \
-            # === AUDIO decoders (только чистые/royalty-free) ===
             --enable-decoder=opus \
             --enable-decoder=vorbis \
             --enable-decoder=flac \
@@ -156,7 +177,6 @@ jobs:
             --enable-decoder=pcm_s24le \
             --enable-decoder=pcm_f32le \
             \
-            # === Anti-X11 / no GPU libs ===
             --disable-sdl2 \
             --disable-xlib \
             --disable-libxcb \
