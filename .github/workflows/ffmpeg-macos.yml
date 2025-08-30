@@ -45,7 +45,13 @@ jobs:
                 -DENABLE_NASM=ON -DAOM_TARGET_CPU=arm64
           cmake --build build-aom --parallel
           cmake --install build-aom
+          
+          # Debug info
+          echo "=== libaom installation verification ==="
           ls -la "$DEPS_PREFIX/lib" | sed -n '1,200p'
+          ls -la "$DEPS_PREFIX/lib/pkgconfig/" | grep aom || echo "No aom.pc found"
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          pkg-config --exists aom && echo "✅ libaom pkg-config OK" || echo "❌ libaom pkg-config failed"
 
       # -------- SVT-AV1 (AV1 encoder; static) --------
       - name: Build & install SVT-AV1 (static)
@@ -59,7 +65,28 @@ jobs:
                 -DBUILD_APPS=OFF -DBUILD_TESTING=OFF
           cmake --build build-svt --parallel
           cmake --install build-svt
+          
+          # Debug info - SVT-AV1 pkg-config может иметь разные имена
+          echo "=== SVT-AV1 installation verification ==="
           ls -la "$DEPS_PREFIX/lib" | sed -n '1,200p'
+          ls -la "$DEPS_PREFIX/lib/pkgconfig/" | grep -i svt || echo "No SVT pkg-config found"
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          
+          # Try different possible names for SVT-AV1 pkg-config
+          if pkg-config --exists SvtAv1Enc; then
+            echo "✅ SVT-AV1 found as SvtAv1Enc"
+            pkg-config --modversion SvtAv1Enc
+          elif pkg-config --exists svt-av1; then  
+            echo "✅ SVT-AV1 found as svt-av1"
+            pkg-config --modversion svt-av1
+          elif pkg-config --exists libsvtav1; then
+            echo "✅ SVT-AV1 found as libsvtav1" 
+            pkg-config --modversion libsvtav1
+          else
+            echo "❌ SVT-AV1 pkg-config not found under any known name"
+            echo "Available pkg-config files:"
+            ls -la "$DEPS_PREFIX/lib/pkgconfig/"
+          fi
 
       # -------- libopus (audio encoder; static) --------
       - name: Build & install libopus (static)
@@ -72,8 +99,11 @@ jobs:
           ./configure --prefix="$DEPS_PREFIX" --disable-shared --enable-static CFLAGS="-O3"
           make -j"$(sysctl -n hw.ncpu)"
           make install
+          
+          # Verify installation  
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          pkg-config --exists opus && pkg-config --modversion opus
+          pkg-config --exists opus && echo "✅ libopus pkg-config OK"
+          pkg-config --modversion opus
 
       # -------- libogg (container helper for Vorbis; static) --------
       - name: Build & install libogg (static)
@@ -86,8 +116,11 @@ jobs:
           ./configure --prefix="$DEPS_PREFIX" --disable-shared --enable-static CFLAGS="-O3"
           make -j"$(sysctl -n hw.ncpu)"
           make install
+          
+          # Verify installation
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          pkg-config --exists ogg && pkg-config --modversion ogg
+          pkg-config --exists ogg && echo "✅ libogg pkg-config OK"
+          pkg-config --modversion ogg
 
       # -------- libvorbis (audio encoder; static) - FIXED VERSION --------
       - name: Build & install libvorbis (static) - with macOS compatibility fix
@@ -117,19 +150,22 @@ jobs:
             autoreconf -fiv
           fi
           
-          PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
+          # Set PKG_CONFIG_PATH for this build
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           ./configure --prefix="$DEPS_PREFIX" --disable-shared --enable-static CFLAGS="-O3" \
                       --disable-oggtest
           make -j"$(sysctl -n hw.ncpu)"
           make install
-          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          pkg-config --exists vorbis vorbisenc && pkg-config --modversion vorbisenc
+          
+          # Verify installation
+          echo "=== PKG_CONFIG_PATH after libvorbis install ==="
+          echo $PKG_CONFIG_PATH
+          ls -la "$DEPS_PREFIX/lib/pkgconfig/"
+          pkg-config --exists vorbis vorbisenc && echo "✅ libvorbis pkg-config OK"
+          pkg-config --modversion vorbisenc
 
       # -------- FFmpeg (static, LGPL, AV1 encoders + Opus/Vorbis/FLAC/ALAC, anti-X11) --------
       - name: Build FFmpeg (LGPL, static, AV1 + clean audio codecs)
-        env:
-          PKG_CONFIG_PATH: "${{ env.DEPS_PREFIX }}/lib/pkgconfig:${{ env.PKG_CONFIG_PATH }}"
-          PKG_CONFIG: "pkg-config --static"
         run: |
           set -euxo pipefail
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
@@ -140,6 +176,35 @@ jobs:
           export LDFLAGS="-L$DEPS_PREFIX/lib"
           export CFLAGS="-I$DEPS_PREFIX/include"
           export CPPFLAGS="$CFLAGS"
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          
+          # Debug: verify all dependencies are found
+          echo "=== Dependency verification ==="
+          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
+          echo "LDFLAGS: $LDFLAGS"
+          echo "CFLAGS: $CFLAGS"
+          
+          echo "=== Available pkg-config files ==="
+          ls -la "$DEPS_PREFIX/lib/pkgconfig/"
+          
+          echo "=== Testing pkg-config dependencies ==="
+          pkg-config --exists aom && echo "✅ libaom found" || echo "❌ libaom not found"
+          
+          # Test SVT-AV1 with different possible names
+          if pkg-config --exists SvtAv1Enc; then
+            echo "✅ SVT-AV1 found as SvtAv1Enc"
+          elif pkg-config --exists svt-av1; then  
+            echo "✅ SVT-AV1 found as svt-av1"
+          elif pkg-config --exists libsvtav1; then
+            echo "✅ SVT-AV1 found as libsvtav1"
+          else
+            echo "❌ SVT-AV1 not found under any name"
+          fi
+          
+          pkg-config --exists opus && echo "✅ libopus found" || echo "❌ libopus not found"
+          pkg-config --exists ogg && echo "✅ libogg found" || echo "❌ libogg not found"
+          pkg-config --exists vorbis && echo "✅ libvorbis found" || echo "❌ libvorbis not found"
+          pkg-config --exists vorbisenc && echo "✅ libvorbisenc found" || echo "❌ libvorbisenc not found"
 
           ./configure \
             --prefix="$INSTALL_PREFIX" \
