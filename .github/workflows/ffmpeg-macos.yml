@@ -27,8 +27,9 @@ jobs:
           ensure pkg-config
           ensure nasm
           ensure yasm
+          # meson/python не нужны, декодер dav1d не собираем
 
-      # -------- libaom (AV1 encoder/decoder, we use it as encoder; static) --------
+      # -------- libaom (AV1 encoder; static) --------
       - name: Build & install libaom (static)
         run: |
           set -euxo pipefail
@@ -57,8 +58,8 @@ jobs:
           cmake --install build-svt
           ls -la "$DEPS_PREFIX/lib" | sed -n '1,200p'
 
-      # -------- FFmpeg (static, LGPL, encoders-only: libaom-av1 + svtav1) --------
-      - name: Build FFmpeg (LGPL, static, encoders-only AV1)
+      # -------- FFmpeg (static, LGPL, encoders-only AV1) --------
+      - name: Build FFmpeg (LGPL, static, AV1 encoders only)
         env:
           PKG_CONFIG_PATH: "${{ env.DEPS_PREFIX }}/lib/pkgconfig:${{ env.PKG_CONFIG_PATH }}"
           PKG_CONFIG: "pkg-config --static"
@@ -87,24 +88,37 @@ jobs:
             --enable-encoder=libaom_av1 \
             --enable-encoder=libsvtav1 \
             --enable-libaom \
-            --enable-libsvtav1
+            --enable-libsvtav1 \
+            \
+            --disable-sdl2 \
+            --disable-xlib \
+            --disable-libxcb \
+            --disable-libxcb-shm \
+            --disable-libxcb-xfixes \
+            --disable-libxcb-shape \
+            --disable-indev=xcbgrab \
+            --disable-vulkan \
+            --disable-opencl
 
           make -j"$(sysctl -n hw.ncpu)"
           make install
 
-      - name: Verify build (AV1 encoders present, no decoders, LGPL)
+      - name: Verify build (no Homebrew dylibs, LGPL)
         run: |
           set -euxo pipefail
           "$INSTALL_PREFIX/bin/ffmpeg" -version
-          echo "=== encoders ==="
-          "$INSTALL_PREFIX/bin/ffmpeg" -encoders  | grep -E "libaom_av1|svtav1"
-          echo "=== decoders (should be empty or very few builtins) ==="
-          "$INSTALL_PREFIX/bin/ffmpeg" -decoders | head -20
-          echo "=== check no GPL ==="
+          echo "=== encoders: expect libaom_av1 & svtav1 only ==="
+          "$INSTALL_PREFIX/bin/ffmpeg" -encoders | grep -E "libaom_av1|svtav1"
+          echo "=== no GPL flags ==="
           ! "$INSTALL_PREFIX/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"
-          echo "✅ LGPL (no --enable-gpl)"
-          echo "=== link info ==="
-          otool -L "$INSTALL_PREFIX/bin/ffmpeg" | sed -n '1,120p'
+          echo "=== otool check (must not reference /opt/homebrew or /usr/local/opt) ==="
+          otool -L "$INSTALL_PREFIX/bin/ffmpeg" | sed -n '1,200p'
+          if otool -L "$INSTALL_PREFIX/bin/ffmpeg" | grep -E "/opt/homebrew|/usr/local/opt" ; then
+            echo "❌ Found Homebrew-linked dylibs. Please review configure flags."
+            exit 1
+          else
+            echo "✅ No Homebrew dylibs referenced"
+          fi
 
       - name: Package artifact (ffmpeg + ffprobe)
         run: |
