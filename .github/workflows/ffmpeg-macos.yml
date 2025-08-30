@@ -197,8 +197,28 @@ jobs:
           export CPPFLAGS="$CFLAGS"
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
           
-          # Important: FFmpeg might need this specific PKG_CONFIG setting
-          export PKG_CONFIG="pkg-config --static"
+          # CRITICAL FIX: FFmpeg configure needs static linking info during tests
+          # We need to tell configure the exact libs needed for static linking
+          export VORBIS_LIBS="$(pkg-config --static --libs vorbis)"
+          export VORBISENC_LIBS="$(pkg-config --static --libs vorbisenc)" 
+          export AOM_LIBS="$(pkg-config --static --libs aom)"
+          export OPUS_LIBS="$(pkg-config --static --libs opus)"
+          export SVT_AV1_LIBS="$(pkg-config --static --libs SvtAv1Enc)"
+          
+          echo "=== Static linking library flags ==="
+          echo "VORBIS_LIBS: $VORBIS_LIBS"
+          echo "VORBISENC_LIBS: $VORBISENC_LIBS"
+          echo "AOM_LIBS: $AOM_LIBS"  
+          echo "OPUS_LIBS: $OPUS_LIBS"
+          echo "SVT_AV1_LIBS: $SVT_AV1_LIBS"
+          
+          echo "=== Testing basic pkg-config functionality ==="
+          pkg-config --exists aom && echo "✅ libaom OK"
+          pkg-config --exists SvtAv1Enc && echo "✅ SVT-AV1 OK"  
+          pkg-config --exists opus && echo "✅ libopus OK"
+          pkg-config --exists ogg && echo "✅ libogg OK"
+          pkg-config --exists vorbis && echo "✅ libvorbis OK"
+          pkg-config --exists vorbisenc && echo "✅ libvorbisenc OK"
           
           # Debug: verify all dependencies are found
           echo "=== Dependency verification ==="
@@ -208,41 +228,6 @@ jobs:
           
           echo "=== Available pkg-config files ==="
           ls -la "$DEPS_PREFIX/lib/pkgconfig/"
-          
-          echo "=== Testing pkg-config dependencies ==="
-          pkg-config --exists aom && echo "✅ libaom found" || echo "❌ libaom not found"
-          
-          # Test SVT-AV1 with different possible names
-          if pkg-config --exists SvtAv1Enc; then
-            echo "✅ SVT-AV1 found as SvtAv1Enc"
-          elif pkg-config --exists svt-av1; then  
-            echo "✅ SVT-AV1 found as svt-av1"
-          elif pkg-config --exists libsvtav1; then
-            echo "✅ SVT-AV1 found as libsvtav1"
-          else
-            echo "❌ SVT-AV1 not found under any name"
-          fi
-          
-          pkg-config --exists opus && echo "✅ libopus found" || echo "❌ libopus not found"
-          pkg-config --exists ogg && echo "✅ libogg found" || echo "❌ libogg not found"
-          pkg-config --exists vorbis && echo "✅ libvorbis found" || echo "❌ libvorbis not found"
-          pkg-config --exists vorbisenc && echo "✅ libvorbisenc found" || echo "❌ libvorbisenc not found"
-          
-          echo "=== Detailed vorbis pkg-config debugging ==="
-          echo "vorbis.pc content:"
-          cat "$DEPS_PREFIX/lib/pkgconfig/vorbis.pc"
-          echo -e "\nvorbisenc.pc content:"
-          cat "$DEPS_PREFIX/lib/pkgconfig/vorbisenc.pc"
-          
-          echo -e "\n=== Testing pkg-config flags that FFmpeg might use ==="
-          echo "pkg-config --modversion vorbis:" $(pkg-config --modversion vorbis 2>&1)
-          echo "pkg-config --cflags vorbis:" $(pkg-config --cflags vorbis 2>&1) 
-          echo "pkg-config --libs vorbis:" $(pkg-config --libs vorbis 2>&1)
-          echo "pkg-config --static --libs vorbis:" $(pkg-config --static --libs vorbis 2>&1)
-          echo "pkg-config --modversion vorbisenc:" $(pkg-config --modversion vorbisenc 2>&1)
-          echo "pkg-config --cflags vorbisenc:" $(pkg-config --cflags vorbisenc 2>&1)
-          echo "pkg-config --libs vorbisenc:" $(pkg-config --libs vorbisenc 2>&1)
-          echo "pkg-config --static --libs vorbisenc:" $(pkg-config --static --libs vorbisenc 2>&1)
 
           ./configure \
             --prefix="$INSTALL_PREFIX" \
@@ -289,6 +274,11 @@ jobs:
             --disable-indev=xcbgrab \
             --disable-vulkan \
             --disable-opencl \
+            \
+            --extra-libs="$VORBIS_LIBS $VORBISENC_LIBS $AOM_LIBS $OPUS_LIBS $SVT_AV1_LIBS" \
+            --extra-ldflags="-L$DEPS_PREFIX/lib -static-libgcc" \
+            --extra-cflags="-I$DEPS_PREFIX/include" \
+            --pkg-config-flags="--static" \
           || {
             echo "❌ FFmpeg configure failed!"
             echo "=== Showing last 100 lines of config.log for debugging ==="
