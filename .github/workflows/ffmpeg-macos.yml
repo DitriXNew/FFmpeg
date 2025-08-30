@@ -152,17 +152,36 @@ jobs:
           
           # Set PKG_CONFIG_PATH for this build
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-          ./configure --prefix="$DEPS_PREFIX" --disable-shared --enable-static CFLAGS="-O3" \
-                      --disable-oggtest
+          
+          # Configure with additional macOS-specific flags
+          ./configure \
+            --prefix="$DEPS_PREFIX" \
+            --disable-shared --enable-static \
+            --disable-oggtest \
+            --with-ogg="$DEPS_PREFIX" \
+            CFLAGS="-O3 -fPIC" \
+            LDFLAGS="-L$DEPS_PREFIX/lib" \
+            CPPFLAGS="-I$DEPS_PREFIX/include"
+          
           make -j"$(sysctl -n hw.ncpu)"
           make install
           
-          # Verify installation
+          # Verify installation with comprehensive checks
           echo "=== PKG_CONFIG_PATH after libvorbis install ==="
           echo $PKG_CONFIG_PATH
+          echo "=== Installed pkg-config files ==="
           ls -la "$DEPS_PREFIX/lib/pkgconfig/"
-          pkg-config --exists vorbis vorbisenc && echo "✅ libvorbis pkg-config OK"
-          pkg-config --modversion vorbisenc
+          
+          echo "=== Verifying libvorbis pkg-config functionality ==="
+          pkg-config --exists vorbis && echo "✅ libvorbis pkg-config OK" || echo "❌ libvorbis pkg-config failed"
+          pkg-config --exists vorbisenc && echo "✅ libvorbisenc pkg-config OK" || echo "❌ libvorbisenc pkg-config failed"
+          
+          # Show versions and detailed output
+          pkg-config --modversion vorbis || echo "Failed to get vorbis version"
+          pkg-config --modversion vorbisenc || echo "Failed to get vorbisenc version"
+          
+          echo "=== Static library verification ==="
+          ls -la "$DEPS_PREFIX/lib/libvorbis"* || echo "No libvorbis libraries found"
 
       # -------- FFmpeg (static, LGPL, AV1 encoders + Opus/Vorbis/FLAC/ALAC, anti-X11) --------
       - name: Build FFmpeg (LGPL, static, AV1 + clean audio codecs)
@@ -177,6 +196,9 @@ jobs:
           export CFLAGS="-I$DEPS_PREFIX/include"
           export CPPFLAGS="$CFLAGS"
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          
+          # Important: FFmpeg might need this specific PKG_CONFIG setting
+          export PKG_CONFIG="pkg-config --static"
           
           # Debug: verify all dependencies are found
           echo "=== Dependency verification ==="
@@ -205,6 +227,22 @@ jobs:
           pkg-config --exists ogg && echo "✅ libogg found" || echo "❌ libogg not found"
           pkg-config --exists vorbis && echo "✅ libvorbis found" || echo "❌ libvorbis not found"
           pkg-config --exists vorbisenc && echo "✅ libvorbisenc found" || echo "❌ libvorbisenc not found"
+          
+          echo "=== Detailed vorbis pkg-config debugging ==="
+          echo "vorbis.pc content:"
+          cat "$DEPS_PREFIX/lib/pkgconfig/vorbis.pc"
+          echo -e "\nvorbisenc.pc content:"
+          cat "$DEPS_PREFIX/lib/pkgconfig/vorbisenc.pc"
+          
+          echo -e "\n=== Testing pkg-config flags that FFmpeg might use ==="
+          echo "pkg-config --modversion vorbis:" $(pkg-config --modversion vorbis 2>&1)
+          echo "pkg-config --cflags vorbis:" $(pkg-config --cflags vorbis 2>&1) 
+          echo "pkg-config --libs vorbis:" $(pkg-config --libs vorbis 2>&1)
+          echo "pkg-config --static --libs vorbis:" $(pkg-config --static --libs vorbis 2>&1)
+          echo "pkg-config --modversion vorbisenc:" $(pkg-config --modversion vorbisenc 2>&1)
+          echo "pkg-config --cflags vorbisenc:" $(pkg-config --cflags vorbisenc 2>&1)
+          echo "pkg-config --libs vorbisenc:" $(pkg-config --libs vorbisenc 2>&1)
+          echo "pkg-config --static --libs vorbisenc:" $(pkg-config --static --libs vorbisenc 2>&1)
 
           ./configure \
             --prefix="$INSTALL_PREFIX" \
@@ -250,7 +288,14 @@ jobs:
             --disable-libxcb-shape \
             --disable-indev=xcbgrab \
             --disable-vulkan \
-            --disable-opencl
+            --disable-opencl \
+          || {
+            echo "❌ FFmpeg configure failed!"
+            echo "=== Showing last 100 lines of config.log for debugging ==="
+            tail -n 100 ffbuild/config.log
+            echo "=== End of config.log ==="
+            exit 1
+          }
 
           make -j"$(sysctl -n hw.ncpu)"
           make install
