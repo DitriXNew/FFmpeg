@@ -1,4 +1,4 @@
-name: build-ffmpeg-macos-arm64-lgpl-av1-encoders-only
+name: build-ffmpeg-macos-arm64-lgpl-av1-encoders-opus-webm
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           ensure pkg-config
           ensure nasm
           ensure yasm
-          # meson/python не нужны, декодер dav1d не собираем
+          # meson/python не нужны — dav1d не собираем
 
       # -------- libaom (AV1 encoder; static) --------
       - name: Build & install libaom (static)
@@ -58,8 +58,22 @@ jobs:
           cmake --install build-svt
           ls -la "$DEPS_PREFIX/lib" | sed -n '1,200p'
 
-      # -------- FFmpeg (static, LGPL, encoders-only AV1) --------
-      - name: Build FFmpeg (LGPL, static, AV1 encoders only)
+      # -------- libopus (audio encoder; static) --------
+      - name: Build & install libopus (static)
+        run: |
+          set -euxo pipefail
+          mkdir -p "$DEPS_PREFIX"
+          curl -L -o opus.tar.gz https://downloads.xiph.org/releases/opus/opus-1.5.2.tar.gz
+          tar -xzf opus.tar.gz
+          cd opus-1.5.2
+          ./configure --prefix="$DEPS_PREFIX" --disable-shared --enable-static CFLAGS="-O3"
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          pkg-config --exists opus && pkg-config --modversion opus
+
+      # -------- FFmpeg (static, LGPL, AV1 encoders + Opus audio, anti-X11) --------
+      - name: Build FFmpeg (LGPL, static, AV1 encoders + Opus for audio WebM)
         env:
           PKG_CONFIG_PATH: "${{ env.DEPS_PREFIX }}/lib/pkgconfig:${{ env.PKG_CONFIG_PATH }}"
           PKG_CONFIG: "pkg-config --static"
@@ -83,12 +97,15 @@ jobs:
             --enable-pic \
             --disable-debug --disable-doc \
             --enable-videotoolbox \
+            \
             --disable-decoders \
             --disable-encoders \
             --enable-encoder=libaom_av1 \
             --enable-encoder=libsvtav1 \
+            --enable-encoder=libopus \
             --enable-libaom \
             --enable-libsvtav1 \
+            --enable-libopus \
             \
             --disable-sdl2 \
             --disable-xlib \
@@ -103,19 +120,18 @@ jobs:
           make -j"$(sysctl -n hw.ncpu)"
           make install
 
-      - name: Verify build (no Homebrew dylibs, LGPL)
+      - name: Verify build (Opus + AV1 encoders present, no Homebrew dylibs, LGPL)
         run: |
           set -euxo pipefail
           "$INSTALL_PREFIX/bin/ffmpeg" -version
-          echo "=== encoders: expect libaom_av1 & svtav1 only ==="
-          "$INSTALL_PREFIX/bin/ffmpeg" -encoders | grep -E "libaom_av1|svtav1"
-          echo "=== no GPL flags ==="
+          echo "=== encoders ==="
+          "$INSTALL_PREFIX/bin/ffmpeg" -encoders | grep -E "libaom_av1|svtav1|libopus"
+          echo "=== check no GPL ==="
           ! "$INSTALL_PREFIX/bin/ffmpeg" -buildconf | grep -q -- "--enable-gpl"
-          echo "=== otool check (must not reference /opt/homebrew or /usr/local/opt) ==="
+          echo "=== otool check ==="
           otool -L "$INSTALL_PREFIX/bin/ffmpeg" | sed -n '1,200p'
           if otool -L "$INSTALL_PREFIX/bin/ffmpeg" | grep -E "/opt/homebrew|/usr/local/opt" ; then
-            echo "❌ Found Homebrew-linked dylibs. Please review configure flags."
-            exit 1
+            echo "❌ Found Homebrew-linked dylibs"; exit 1
           else
             echo "✅ No Homebrew dylibs referenced"
           fi
@@ -124,12 +140,12 @@ jobs:
         run: |
           set -euxo pipefail
           cd "$INSTALL_PREFIX"
-          tar -czf ffmpeg-macos-arm64-lgpl-av1-encoders-only.tar.gz bin/ffmpeg bin/ffprobe
-          tar -tzf ffmpeg-macos-arm64-lgpl-av1-encoders-only.tar.gz
-          ls -lh ffmpeg-macos-arm64-lgpl-av1-encoders-only.tar.gz
+          tar -czf ffmpeg-macos-arm64-lgpl-av1-encoders-opus-webm.tar.gz bin/ffmpeg bin/ffprobe
+          tar -tzf ffmpeg-macos-arm64-lgpl-av1-encoders-opus-webm.tar.gz
+          ls -lh ffmpeg-macos-arm64-lgpl-av1-encoders-opus-webm.tar.gz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ffmpeg-macos-arm64-lgpl-av1-encoders-only
-          path: ${{ env.INSTALL_PREFIX }}/ffmpeg-macos-arm64-lgpl-av1-encoders-only.tar.gz
+          name: ffmpeg-macos-arm64-lgpl-av1-encoders-opus-webm
+          path: ${{ env.INSTALL_PREFIX }}/ffmpeg-macos-arm64-lgpl-av1-encoders-opus-webm.tar.gz
