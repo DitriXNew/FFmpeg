@@ -3,10 +3,10 @@ name: build-ffmpeg-macos-arm64-lgpl-av1-encoders-opus-vorbis-flac-alac
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ master ]
 
 env:
-  FFMPEG_TAG: "n8.0"
+  FFMPEG_TAG: "n8.1.2"
   INSTALL_PREFIX: "${{ github.workspace }}/install"
   DEPS_PREFIX: "${{ github.workspace }}/deps-install"
   MACOSX_DEPLOYMENT_TARGET: "13.0"
@@ -36,7 +36,7 @@ jobs:
       - name: Build & install libaom (static)
         run: |
           set -euxo pipefail
-          git clone --depth=1 https://aomedia.googlesource.com/aom
+          git clone --depth=1 --branch v3.14.1 https://aomedia.googlesource.com/aom
           cmake -S aom -B build-aom \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
@@ -57,7 +57,7 @@ jobs:
       - name: Build & install SVT-AV1 (static)
         run: |
           set -euxo pipefail
-          git clone --depth=1 https://gitlab.com/AOMediaCodec/SVT-AV1.git
+          git clone --depth=1 --branch v4.1.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git
           cmake -S SVT-AV1 -B build-svt \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
