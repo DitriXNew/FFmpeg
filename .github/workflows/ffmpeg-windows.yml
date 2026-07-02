@@ -208,7 +208,7 @@ jobs:
         run: |
           set -euxo pipefail
           FF="$INSTALL_PREFIX/bin/ffmpeg.exe"
-          CFG="ffmpeg-src/config.h"
+          CFG="ffmpeg-src/config.h ffmpeg-src/config_components.h"
 
           echo "=== no third-party DLL imports (fully static) ==="
           x86_64-w64-mingw32-objdump -p "$FF" | grep "DLL Name" | sort -u
@@ -218,11 +218,13 @@ jobs:
           echo "✅ No third-party DLL dependencies"
 
           # ffmpeg.exe can't run on the Linux builder without wine (flaky on CI
-          # and needs a display), so verify against the generated config.h — it
-          # is deterministic and needs no runtime. Every component is written as
-          # `#define CONFIG_<NAME> 0|1`, and the binary is compiled straight from it.
-          need() { grep -q "^#define $1 1$" "$CFG" && echo "  ✓ $1" || { echo "  ❌ $1 not enabled"; exit 1; }; }
-          deny() { grep -q "^#define $1 0$" "$CFG" && echo "  ✓ $1=0" || { echo "  ❌ $1 not disabled"; exit 1; }; }
+          # and needs a display), so verify against the generated config headers —
+          # deterministic, no runtime. Global flags (GPL/NONFREE/VERSION3) live in
+          # config.h; per-component CONFIG_*_ENCODER/_DECODER macros moved to
+          # config_components.h in FFmpeg 7.0+, so CFG lists both (grep searches
+          # all listed files). Format: `#define CONFIG_<NAME> 0|1`.
+          need() { grep -q "^#define $1 1$" $CFG && echo "  ✓ $1" || { echo "  ❌ $1 not enabled"; exit 1; }; }
+          deny() { grep -q "^#define $1 0$" $CFG && echo "  ✓ $1=0" || { echo "  ❌ $1 not disabled"; exit 1; }; }
 
           echo "=== license gate: no GPL / nonfree / version3 ==="
           deny CONFIG_GPL
