@@ -69,7 +69,7 @@ jobs:
           # aom ships a ready mingw cross toolchain file (defaults CROSS to
           # x86_64-w64-mingw32-), so no hand-written toolchain is needed.
           cmake -S aom -B build-aom \
-                -DCMAKE_TOOLCHAIN_FILE="$(pwd)/aom/build/cmake/toolchains/x86_64-mingw-gcc.cmake" \
+                -DCMAKE_TOOLCHAIN_FILE="$(pwd)/aom/cmake/toolchains/x86_64-mingw-gcc.cmake" \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX="$DEPS_PREFIX" \
                 -DBUILD_SHARED_LIBS=OFF \
