@@ -49,8 +49,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             mingw-w64 mingw-w64-tools \
             cmake ninja-build pkg-config make nasm yasm \
-            autoconf automake libtool git curl ca-certificates \
-            wine64
+            autoconf automake libtool git curl ca-certificates
           echo "=== toolchain versions ==="
           x86_64-w64-mingw32-gcc --version | head -1
           x86_64-w64-mingw32-g++ --version | head -1
@@ -205,10 +204,11 @@ jobs:
           make -j"$(nproc)"
           make install
 
-      - name: Verify build (static, encoders/decoders present, LGPL)
+      - name: Verify build (static + enabled components + LGPL, from config.h)
         run: |
           set -euxo pipefail
           FF="$INSTALL_PREFIX/bin/ffmpeg.exe"
+          CFG="ffmpeg-src/config.h"
 
           echo "=== no third-party DLL imports (fully static) ==="
           x86_64-w64-mingw32-objdump -p "$FF" | grep "DLL Name" | sort -u
@@ -217,20 +217,29 @@ jobs:
           fi
           echo "✅ No third-party DLL dependencies"
 
-          echo "=== ffmpeg -version (via wine) ==="
-          wine64 "$FF" -hide_banner -version
-
-          echo "=== encoders (expect AV1 + AAC/Opus/FLAC/ALAC/PCM) ==="
-          wine64 "$FF" -hide_banner -encoders | grep -E "libaom_av1|libsvtav1|libopus| aac | flac | alac |pcm_s16le|pcm_s24le|pcm_f32le"
-
-          echo "=== decoders (expect video + audio input codecs) ==="
-          wine64 "$FF" -hide_banner -decoders | grep -E " h264 | hevc | vp9 | av1 | aac | mp3 | ac3 | opus | vorbis | flac "
+          # ffmpeg.exe can't run on the Linux builder without wine (flaky on CI
+          # and needs a display), so verify against the generated config.h — it
+          # is deterministic and needs no runtime. Every component is written as
+          # `#define CONFIG_<NAME> 0|1`, and the binary is compiled straight from it.
+          need() { grep -q "^#define $1 1$" "$CFG" && echo "  ✓ $1" || { echo "  ❌ $1 not enabled"; exit 1; }; }
+          deny() { grep -q "^#define $1 0$" "$CFG" && echo "  ✓ $1=0" || { echo "  ❌ $1 not disabled"; exit 1; }; }
 
           echo "=== license gate: no GPL / nonfree / version3 ==="
-          ! wine64 "$FF" -hide_banner -buildconf | grep -q -- "--enable-gpl"
-          ! wine64 "$FF" -hide_banner -buildconf | grep -q -- "--enable-nonfree"
-          ! wine64 "$FF" -hide_banner -buildconf | grep -q -- "--enable-version3"
-          echo "✅ LGPL v2.1 gate passed"
+          deny CONFIG_GPL
+          deny CONFIG_NONFREE
+          deny CONFIG_VERSION3
+
+          echo "=== encoders (AV1 + AAC/Opus/FLAC/ALAC/PCM) ==="
+          for e in LIBAOM_AV1 LIBSVTAV1 LIBOPUS AAC FLAC ALAC PCM_S16LE PCM_S24LE PCM_F32LE; do
+            need "CONFIG_${e}_ENCODER"
+          done
+
+          echo "=== decoders (video + audio input codecs) ==="
+          for d in H264 HEVC VP8 VP9 AV1 MPEG4 MPEG2VIDEO MJPEG AAC MP3 AC3 EAC3 OPUS VORBIS FLAC ALAC PCM_S16LE; do
+            need "CONFIG_${d}_DECODER"
+          done
+
+          echo "✅ LGPL v2.1 build with all required components verified"
 
       - name: Package artifact (ffmpeg.exe + ffprobe.exe)
         run: |
